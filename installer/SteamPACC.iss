@@ -2,7 +2,7 @@
 ; Все тексты мастера — на русском языке.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.2"
+  #define MyAppVersion "0.1.3"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
@@ -43,8 +43,9 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 WelcomeLabel1=SteamPACC показывает цены игр в разных валютах прямо поверх клиента Steam.
 WelcomeLabel2=Программа работает в трее и почти не влияет на производительность игр.
 FinishedHeadingLabel=Установка завершена
-FinishedLabel=SteamPACC установлен. Программа работает в трее и не мешает играть.
-FinishedLabelNoIcons=SteamPACC установлен. Программа работает в трее и не мешает играть.
+FinishedLabel=SteamPACC установлен и уже запущен: окно-подсказка покажет, как им пользоваться.
+FinishedLabelNoIcons=SteamPACC установлен и уже запущен: окно-подсказка покажет, как им пользоваться.
+FinishedHint=Программа живёт в трее. Если значка не видно, нажмите стрелку ^ рядом с часами: там скрытые значки.
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные задачи:"
@@ -53,18 +54,22 @@ Name: "autostart"; Description: "Запускать SteamPACC вместе с Wi
 [Files]
 Source: "..\dist\SteamPACC.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\USER_GUIDE.md"; DestDir: "{app}"; DestName: "Руководство.md"; Flags: ignoreversion
+Source: "..\installer\diagnostika.cmd"; DestDir: "{app}"; DestName: "Диагностика.cmd"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Удалить {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{group}\Руководство"; Filename: "{app}\Руководство.md"
+Name: "{group}\Диагностика"; Filename: "{app}\Диагностика.cmd"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; Программа запускается сразу после установки, без флажка на странице
+; "Готово": флажок postinstall по умолчанию снят, и программа не стартовала.
+Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; Flags: nowait
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

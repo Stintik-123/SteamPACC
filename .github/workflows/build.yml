@@ -40,9 +40,38 @@ jobs:
           fi
           exit $code
 
-      - name: Сборка исполняемого файла
+      - name: Сборка исполняемых файлов
         run: |
           pyinstaller --noconfirm --clean --onefile --windowed --name SteamPACC --paths src src/steampacc/__main__.py
+          pyinstaller --noconfirm --clean --onefile --console --name SteamPACC-Console --paths src src/steampacc/__main__.py
+
+      - name: Проверка собранной программы без графики
+        shell: bash
+        run: |
+          set -e
+          ./dist/SteamPACC-Console.exe --selftest
+          echo "--- Журнал программы ---"
+          cat "$APPDATA/SteamPACC/steampacc.log" || echo "Журнала нет"
+
+      - name: Проверка графической части на Windows
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          ./dist/SteamPACC-Console.exe --smoke
+          echo "Код проверки графики: $?"
+          echo "--- Журнал программы ---"
+          cat "$APPDATA/SteamPACC/steampacc.log" || echo "Журнала нет"
+          mkdir -p diagnostics
+          cp -r "$APPDATA/SteamPACC/." diagnostics/ 2>/dev/null || echo "Отчётов нет"
+
+      - name: Сохранение отчётов проверки
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics
+          path: diagnostics
+          if-no-files-found: warn
 
       - name: Установка Inno Setup
         run: choco install innosetup --yes --no-progress
@@ -70,6 +99,13 @@ jobs:
           name: SteamPACC-Setup
           path: dist/SteamPACC-Setup-*.exe
           if-no-files-found: error
+
+      - name: Сохранение диагностической сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamPACC-Console
+          path: dist/SteamPACC-Console.exe
+          if-no-files-found: warn
 
       - name: Публикация релиза
         if: startsWith(github.ref, 'refs/tags/')

@@ -173,3 +173,49 @@ def is_minimized(hwnd: int) -> bool:
     '''True, если окно свёрнуто.'''
     hwnd = _require_hwnd(hwnd)
     return bool(_lib().IsIconic(ctypes.c_void_p(hwnd)))
+
+
+#: Код ошибки Windows: объект с таким именем уже существует.
+ERROR_ALREADY_EXISTS = 183
+
+#: Загруженная библиотека kernel32; создаётся при первом обращении.
+_kernel32_lib: Any | None = None
+
+
+def _kernel32() -> Any:
+    '''Возвращает kernel32, загружая её при первом обращении (только Windows).'''
+    global _kernel32_lib
+    if not is_available():
+        raise WinApiError('WinAPI доступен только в Windows, текущая система: ' + sys.platform)
+    if _kernel32_lib is None:
+        _kernel32_lib = ctypes.WinDLL('kernel32', use_last_error=True)
+    return _kernel32_lib
+
+
+def create_named_mutex(name: str) -> tuple[int, bool]:
+    '''Создаёт именованный мьютекс Windows.
+
+    Возвращает пару (дескриптор, первый_ли_это_экземпляр). Если мьютекс с
+    таким именем уже существует, открывается он, и первый элемент пары равен
+    False: значит, программа уже запущена в другом окне.
+    '''
+    if not isinstance(name, str) or not name:
+        raise WinApiError('Имя мьютекса должно быть непустой строкой')
+    kernel32 = _kernel32()
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, name)
+    error_code = ctypes.get_last_error()
+    if not handle:
+        raise WinApiError('Не удалось создать мьютекс: ' + name)
+    return (int(handle), error_code != ERROR_ALREADY_EXISTS)
+
+
+def close_handle(handle: int) -> bool:
+    '''Закрывает дескриптор Windows; True, если закрытие удалось.'''
+    if not isinstance(handle, int) or handle <= 0:
+        raise WinApiError('Некорректный дескриптор: ' + repr(handle))
+    kernel32 = _kernel32()
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    return bool(kernel32.CloseHandle(ctypes.c_void_p(handle)))

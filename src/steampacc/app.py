@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import win_api
+from . import diagnostics
 from . import __version__ as app_version
 from .config import Settings, load_settings, save_settings
 from .diagnostics import (
@@ -369,7 +370,9 @@ if QT_AVAILABLE:
             title.setFont(QFont('Segoe UI', 14, QFont.Bold))
             layout.addWidget(title)
             text = QLabel(chr(10).join([
-                'Программа живёт в трее: значок рядом с часами в правом нижнем углу.',
+                'Программа запустилась и живёт в трее: значок рядом с часами.',
+                'Не видите значок? Нажмите стрелку ^ рядом с часами:',
+                'там лежат скрытые значки, среди них SteamPACC.',
                 'Оверлей с ценами появляется поверх окна запущенной игры.',
                 '',
                 'Чтобы увидеть его: запустите любую установленную игру.',
@@ -453,7 +456,9 @@ if QT_AVAILABLE:
             log_message('Приложение запущено, автозапуск: ' + str(is_autostart_launch()))
             self._tick()
             self._timer.start(2000)
-            if not is_autostart_launch():
+            first = is_first_launch()
+            log_message('Первый запуск на этом компьютере: ' + str(first))
+            if not is_autostart_launch() or first:
                 self._show_guide()
             self._tray.showMessage(
                 'SteamPACC',
@@ -461,6 +466,10 @@ if QT_AVAILABLE:
                 QSystemTrayIcon.MessageIcon.Information,
                 6000,
             )
+
+        def tray_available(self) -> bool:
+            '''True, если системный трей доступен и значок в нём есть.'''
+            return bool(QSystemTrayIcon.isSystemTrayAvailable())
 
         def _show_guide(self) -> None:
             '''Показывает окно с инструкцией: как пользоваться программой.'''
@@ -636,6 +645,77 @@ if QT_AVAILABLE:
             return result
 
 
+#: Имя мьютекса для единственного экземпляра программы.
+SINGLE_INSTANCE_MUTEX = 'SteamPACC.SingleInstance'
+
+#: Имя файла-метки первого запуска в каталоге данных.
+FIRST_RUN_MARKER = 'pervyy_zapusk.marker'
+
+
+def is_first_launch() -> bool:
+    '''True, если программа запускается впервые на этом компьютере.
+
+    При первом запуске окно-подсказка показывается даже при старте вместе
+    с Windows: так пользователь сразу видит, что программа работает. Метка
+    записывается в каталог данных, поэтому окно показывается один раз.
+    '''
+    try:
+        marker = diagnostics.data_dir() / FIRST_RUN_MARKER
+        if marker.exists():
+            return False
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text('ok', encoding='utf-8')
+        return True
+    except OSError:
+        return False
+
+
+def claim_single_instance() -> bool:
+    '''Завладевает мьютексом единственного экземпляра программы.
+
+    True, если это первый запущенный экземпляр. False, если программа уже
+    работает: тогда второй экземпляр должен тихо выйти.
+    '''
+    try:
+        handle, is_first = win_api.create_named_mutex(SINGLE_INSTANCE_MUTEX)
+    except win_api.WinApiError:
+        return True
+    if is_first:
+        return True
+    try:
+        win_api.close_handle(handle)
+    except win_api.WinApiError:
+        pass
+    return False
+
+
+def smoke_test() -> int:
+    '''Проверяет, что графическая часть поднимается, и пишет результат в журнал.
+
+    Нужна для автоматической проверки на Windows: программа создаёт
+    приложение, показывает значок в трее, обрабатывает события пару
+    секунд и завершает работу. Код возврата: 0 - графика работает.
+    '''
+    log_message('Самопроверка графической части: старт')
+    if not QT_AVAILABLE:
+        log_message('Самопроверка: PySide6 недоступна')
+        return 1
+    try:
+        win_api.set_dpi_awareness()
+        application = QApplication(sys.argv)
+        application.setQuitOnLastWindowClosed(False)
+        controller = AppController(application)
+        log_message('Самопроверка: трей доступен: ' + str(controller.tray_available()))
+        QTimer.singleShot(2000, application.quit)
+        result = int(application.exec())
+        log_message('Самопроверка: графическая часть работает')
+        return result
+    except Exception as error:
+        log_exception('Самопроверка: графическая часть не запустилась')
+        show_error('SteamPACC - ошибка', 'Проверка графической части не пройдена: ' + str(error))
+        return 1
+
+
 def run() -> int:
     '''Запускает графическую часть приложения и возвращает код возврата.'''
     log_message('Запуск SteamPACC, версия ' + app_version())
@@ -648,6 +728,9 @@ def run() -> int:
         )
         return 1
     try:
+        if not claim_single_instance():
+            log_message('SteamPACC уже запущен: второй экземпляр завершает работу')
+            return 0
         win_api.set_dpi_awareness()
         application = QApplication(sys.argv)
         application.setQuitOnLastWindowClosed(False)

@@ -14,11 +14,17 @@ SteamPACC (Steam Price and currency conversion), программа, котор�
 
 1. Скачайте установщик `SteamPACC-Setup-<версия>.exe` из раздела [Releases](https://github.com/Stintik-123/SteamPACC/releases).
 2. Запустите установщик и пройдите мастер установки.
-3. SteamPACC запускается автоматически и живёт в трее (значок рядом с часами).
-4. При первом запуске откройте настройки из трея: выберите валюты и откалибруйте положение оверлея поверх окна Steam.
+3. SteamPACC запускается сразу после установки и живёт в трее (значок рядом с часами).
+   Если значка не видно, нажмите стрелку ^ рядом с часами: в Windows 11 новые значки
+   прячутся в меню «скрытые значки».
+4. При первом запуске появляется окно-подсказка: в нём написано, как пользоваться программой.
+5. Настройки валют - правый клик по значку в трее.
 
 Подробная инструкция - в руководстве пользователя: [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 Руководство также устанавливается вместе с программой и лежит в каталоге установки.
+
+Если программа не запускается или значка нет, запустите в каталоге установки файл
+`Диагностика.cmd`: он соберёт отчёт о системе и покажет его в блокноте.
 
 Требуется Windows 10/11 x64. Программа устанавливается в `C:\Program Files\SteamPACC`.
 
@@ -33,6 +39,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements-dev.txt
 pyinstaller --noconfirm --clean --onefile --windowed --name SteamPACC --paths src src/steampacc/__main__.py
+pyinstaller --noconfirm --clean --onefile --console --name SteamPACC-Console --paths src src/steampacc/__main__.py
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\SteamPACC.iss
 ```
 
