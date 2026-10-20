@@ -148,11 +148,17 @@ jobs:
             return $code
           }
 
+          # Закрываем всё, что могло остаться от предыдущих шагов:
+          # работающую программу или графическую проверку.
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+          taskkill //IM SteamPACC-Console.exe //F 2>/dev/null || true
+          sleep 2
           setup=$(ls dist/SteamPACC-Setup-*.exe | head -1)
           echo "=== Устанавливаем: $setup ==="
-          with_timeout 300 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART || {
+          with_timeout 180 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG || {
             echo "ОШИБКА: установщик не отработал"
+            echo "--- журнал установщика (Inno Setup) ---"
+            cat dist/SteamPACC-Setup-*.log 2>/dev/null || echo "журнала установщика нет"
             exit 1
           }
           echo "=== Установщик отработал ==="
@@ -231,6 +237,21 @@ jobs:
             exit 1
           fi
           echo "OK: после удаления ключ автозапуска исчез"
+
+      - name: Сохранение журнала установщика
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics-installer
+          cp dist/SteamPACC-Setup-*.log diagnostics-installer/ 2>/dev/null || echo "журнала установщика нет"
+
+      - name: Сохранение установщика: журнал
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-installer
+          path: diagnostics-installer
+          if-no-files-found: ignore
 
       - name: Сохранение диагностической сборки
         uses: actions/upload-artifact@v4

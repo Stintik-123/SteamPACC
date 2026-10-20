@@ -1,8 +1,8 @@
-﻿; Скрипт установщика SteamPACC (Inno Setup 6).
+; Скрипт установщика SteamPACC (Inno Setup 6).
 ; Все тексты мастера — на русском языке.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4"
+  #define MyAppVersion "0.1.5"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
@@ -33,7 +33,6 @@ LicenseFile=..\LICENSE
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
-AppMutex=SteamPACC.SingleInstance
 ; Установка без прав администратора: личная утилита ставится в каталог
 ; пользователя. Прежние права админа приводили к зависанию установщика
 ; в CI и к лишнему запросу UAC при установке вручную.
@@ -73,7 +72,25 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 ; Программа запускается сразу после установки, без флажка на странице
 ; "Готово": флажок postinstall по умолчанию снят, и программа не стартовала.
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; Flags: nowait
+; Запуск идёт через cmd /c start: программа должна отделиться от
+; установщика. Иначе Inno Setup ждёт завершения запущенного процесса,
+; а программа живёт в трее постоянно: установщик зависал на 300 секунд
+; и не доходил до конца.
+Filename: "{cmd}"; Parameters: "/c start """"{app}\{#MyAppExeName}"""; Description: "Запустить {#MyAppName}"; Flags: nowait runhidden
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+
+[Code]
+{ Перед установкой закрываем ранее запущенную копию программы.
+  Пока программа работает, её файлы заняты, и установщик ждёт
+  закрытия приложения: в тихом режиме это превращается в
+  бесконечное ожидание. }
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(2000);
+end;
