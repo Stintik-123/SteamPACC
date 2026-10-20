@@ -14,16 +14,34 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings, save_settings
-from .prices import Price, PriceError, fetch_price, format_price
+from .prices import (
+    CURRENCY_COUNTRIES,
+    CURRENCY_SYMBOLS,
+    SUPPORTED_COUNTRIES,
+    Price,
+    PriceError,
+    fetch_price,
+    format_price,
+)
 
 try:
     from PySide6.QtCore import QSize, QTimer, Qt
     from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
-    from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
+    from PySide6.QtWidgets import (
+        QApplication,
+        QCheckBox,
+        QLabel,
+        QMenu,
+        QPushButton,
+        QSystemTrayIcon,
+        QVBoxLayout,
+        QWidget,
+    )
 
     QT_AVAILABLE = True
 except ImportError:
@@ -207,6 +225,14 @@ def find_steam_window() -> tuple[int, int, int, int] | None:
     return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
 
+def welcome_marker_path() -> Path:
+    '''Путь к файлу-метке: показывает, что подсказка уже показывалась.'''
+    base = os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME')
+    if base:
+        return Path(base) / 'SteamPACC' / 'welcome.done'
+    return Path.home() / '.config' / 'SteamPACC' / 'welcome.done'
+
+
 def foreground_title() -> str:
     '''Возвращает заголовок активного окна; вне Windows возвращает пустую строку.'''
     if os.name != 'nt':
@@ -223,6 +249,48 @@ def foreground_title() -> str:
     except (AttributeError, OSError, ValueError):
         return ''
     return buffer.value
+
+
+def foreground_window() -> tuple[int, tuple[int, int, int, int], str, str] | None:
+    '''Возвращает активное окно: дескриптор, прямоугольник, заголовок и класс.
+
+    Вне Windows всегда возвращает None.
+    '''
+    if os.name != 'nt':
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+            return None
+        length = user32.GetWindowTextLengthW(hwnd)
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        class_buffer = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, class_buffer, 256)
+    except (AttributeError, OSError, ValueError):
+        return None
+    box = (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
+    return int(hwnd), box, buffer.value, class_buffer.value
+
+
+def is_minimized(hwnd: int) -> bool:
+    '''True, если окно свёрнуто; вне Windows всегда False.'''
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        return bool(ctypes.windll.user32.IsIconic(wintypes.HWND(hwnd)))
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
 if QT_AVAILABLE:
@@ -276,12 +344,75 @@ if QT_AVAILABLE:
                 painter.drawText(max(12 * scale // 100, 8), y, line)
                 y += step
 
+    class SettingsDialog(QWidget):
+        '''Окно выбора валют, которые показывает оверлей.'''
+
+        def __init__(self, settings: Settings) -> None:
+            super().__init__()
+            self.setWindowTitle('SteamPACC - настройки')
+            self._settings = settings
+            self._boxes: dict[str, QCheckBox] = {}
+            layout = QVBoxLayout(self)
+            note = QLabel('Выберите валюты, которые показывать в оверлее:')
+            layout.addWidget(note)
+            for code in sorted(CURRENCY_SYMBOLS):
+                symbol = CURRENCY_SYMBOLS[code]
+                country = CURRENCY_COUNTRIES.get(code, '')
+                label = code + ' (' + symbol + ')'
+                if country:
+                    label = label + ' - ' + SUPPORTED_COUNTRIES.get(country, country)
+                box = QCheckBox(label)
+                box.setChecked(code in settings.currencies)
+                self._boxes[code] = box
+                layout.addWidget(box)
+            button = QPushButton('Сохранить')
+            button.clicked.connect(self.save)
+            layout.addWidget(button)
+            self.resize(320, 420)
+
+        def save(self) -> None:
+            '''Сохраняет выбранные валюты в файл настроек.'''
+            chosen = [code for code, box in self._boxes.items() if box.isChecked()]
+            if not chosen:
+                chosen = ['RUB', 'USD', 'EUR']
+            save_settings(replace(self._settings, currencies=tuple(chosen)))
+            self.close()
+
+    class WelcomeWindow(QWidget):
+        '''Окно-подсказка, которое показывается при первом запуске.'''
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.setWindowTitle('SteamPACC')
+            layout = QVBoxLayout(self)
+            title = QLabel('SteamPACC запущен')
+            title.setFont(QFont('Segoe UI', 14, QFont.Bold))
+            layout.addWidget(title)
+            text = QLabel(chr(10).join([
+                'Программа живёт в трее: значок рядом с часами в правом нижнем углу.',
+                'Оверлей с ценами появляется поверх окна запущенной игры.',
+                '',
+                'Чтобы увидеть его: запустите любую установленную игру.',
+                'Если игра идёт в полноэкранном режиме, переключите её',
+                'в оконный режим или в полноэкранный без рамки.',
+                '',
+                'Настройки валют - правый клик по значку в трее.',
+            ]))
+            text.setWordWrap(True)
+            layout.addWidget(text)
+            button = QPushButton('Понятно')
+            button.clicked.connect(self.close)
+            layout.addWidget(button)
+            self.resize(460, 260)
+
     class AppController:
         '''Управляет оверлеем, значком в трее и обновлением цен.'''
 
         def __init__(self, application: QApplication) -> None:
             self._app = application
             self._settings = load_settings()
+            self._settings_window: SettingsDialog | None = None
+            self._welcome_window: WelcomeWindow | None = None
             self._cache_file = cache_path()
             self._cache = load_cache(self._cache_file)
             self._window = OverlayWindow(self._settings)
@@ -293,16 +424,19 @@ if QT_AVAILABLE:
             menu = QMenu()
             action_refresh = QAction('Обновить цены', menu)
             action_refresh.triggered.connect(self._tick)
-            action_show = QAction('Показать оверлей', menu)
-            action_show.triggered.connect(self._window.show)
+            action_show = QAction('Показать подсказку', menu)
+            action_show.triggered.connect(self._show_hint_now)
             action_hide = QAction('Скрыть оверлей', menu)
             action_hide.triggered.connect(self._window.hide)
+            action_settings = QAction('Настройки...', menu)
+            action_settings.triggered.connect(self._open_settings)
             action_quit = QAction('Выход', menu)
             action_quit.triggered.connect(application.quit)
             menu.addAction(action_refresh)
             menu.addSeparator()
             menu.addAction(action_show)
             menu.addAction(action_hide)
+            menu.addAction(action_settings)
             menu.addSeparator()
             menu.addAction(action_quit)
             self._tray.setContextMenu(menu)
@@ -322,25 +456,74 @@ if QT_AVAILABLE:
             return QIcon(pixmap)
 
         def start(self) -> None:
-            '''Запускает обновление оверлея и показывает его.'''
+            '''Запускает обновление оверлея и показывает подсказку при первом запуске.'''
             self._tick()
             self._timer.start(2000)
+            self._show_welcome_once()
+            self._tray.showMessage(
+                'SteamPACC',
+                'SteamPACC запущен и ждёт в трее. Оверлей появится поверх окна игры.',
+                QSystemTrayIcon.MessageIcon.Information,
+                6000,
+            )
+
+        def _show_welcome_once(self) -> None:
+            '''Показывает окно-подсказку при первом запуске после установки.'''
+            marker = welcome_marker_path()
+            try:
+                if marker.exists():
+                    return
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text('1', encoding='utf-8')
+            except OSError:
+                return
+            self._welcome_window = WelcomeWindow()
+            self._welcome_window.show()
+
+        def _open_settings(self) -> None:
+            '''Открывает окно выбора валют.'''
+            if self._settings_window is not None:
+                self._settings_window.close()
+            self._settings_window = SettingsDialog(self._settings)
+            self._settings_window.show()
+            self._settings_window.raise_()
+
+        def _show_hint_now(self) -> None:
+            '''Показывает подсказку поверх окна Steam или окно-подсказку.'''
+            rect = find_steam_window()
+            if rect is None:
+                self._welcome_window = WelcomeWindow()
+                self._welcome_window.show()
+                return
+            self._show_hint(rect)
 
         def _tick(self) -> None:
             '''Обновляет содержимое оверлея; ошибки не прерывают работу.'''
             try:
+                self._settings = load_settings()
                 self._update_overlay()
             except (OSError, ValueError, RuntimeError, PriceError):
                 pass
 
         def _update_overlay(self) -> None:
-            '''Находит окно Steam, определяет игру и обновляет панель.'''
-            rect = find_steam_window()
-            if rect is None:
+            '''Определяет активную игру и ставит панель поверх окна игры.
+
+            Если активно окно клиента Steam, показывается подсказка: оверлей
+            появится, когда будет запущена игра.
+            '''
+            info = foreground_window()
+            if info is None:
                 self._window.hide()
                 return
-            appid = self._detect_appid(foreground_title())
+            hwnd, rect, title, class_name = info
+            if class_name in STEAM_WINDOW_CLASSES:
+                self._show_hint(rect)
+                return
+            appid = self._detect_appid(title)
             if appid is None:
+                self._window.hide()
+                return
+            if is_minimized(hwnd):
                 self._window.hide()
                 return
             prices = self._prices_for(appid)
@@ -353,16 +536,43 @@ if QT_AVAILABLE:
             self._window.show()
             self._window.raise_()
 
+        def _show_hint(self, rect: tuple[int, int, int, int]) -> None:
+            '''Показывает над окном Steam подсказку, как включить оверлей.'''
+            lines = [
+                'SteamPACC работает',
+                'Запустите установленную игру -',
+                'здесь появятся цены в других валютах',
+            ]
+            self._window.set_lines(lines)
+            width, height = panel_size(lines, self._settings.overlay_scale)
+            self._window.resize(width, height)
+            x, y = overlay_position(rect, (width, height))
+            self._window.move(x, y)
+            self._window.show()
+            self._window.raise_()
+
         def _load_games(self) -> None:
-            '''Загружает список установленных игр для определения активной.'''
-            from .library import read_installed_games
-            from .steam_paths import find_steam_root
+            '''Загружает установленные игры из всех библиотек Steam.'''
+            from .library import iter_library_games, read_library_folders
+            from .steam_paths import find_steam_root, steam_paths
 
             root = find_steam_root()
             if root is None:
                 return
+            roots: list[Path] = [root]
             try:
-                games = read_installed_games(root)
+                folders_file = steam_paths(root).libraryfolders_vdf
+                if folders_file.is_file():
+                    text = folders_file.read_text(encoding='utf-8', errors='ignore')
+                    roots.extend(read_library_folders(text))
+            except OSError:
+                pass
+            unique: list[Path] = []
+            for item in roots:
+                if item not in unique:
+                    unique.append(item)
+            try:
+                games = list(iter_library_games(unique))
             except OSError:
                 return
             self._games = {game.name.lower(): game.appid for game in games}
@@ -395,7 +605,7 @@ if QT_AVAILABLE:
                 price = cached_price(self._cache, appid, code)
                 if price is None:
                     try:
-                        price = fetch_price(appid, code.lower())
+                        price = fetch_price(appid, CURRENCY_COUNTRIES.get(code, code.lower()))
                     except PriceError:
                         continue
                     self._cache[code] = {

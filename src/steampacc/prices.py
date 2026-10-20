@@ -59,6 +59,22 @@ CURRENCY_SYMBOLS: dict[str, str] = {
     'BRL': 'R' + chr(36),
 }
 
+#: Код валюты -> код страны Steam, по которому запрашивается цена.
+CURRENCY_COUNTRIES: dict[str, str] = {
+    'RUB': 'ru',
+    'USD': 'us',
+    'EUR': 'de',
+    'GBP': 'gb',
+    'JPY': 'jp',
+    'KRW': 'kr',
+    'INR': 'in',
+    'TRY': 'tr',
+    'UAH': 'ua',
+    'KZT': 'kz',
+    'PLN': 'pl',
+    'BRL': 'br',
+}
+
 
 class PriceError(ValueError):
     '''Ошибка получения или разбора сведений о цене.'''

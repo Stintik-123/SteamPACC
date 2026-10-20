@@ -2,7 +2,7 @@
 ; Все тексты мастера — на русском языке.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.1.1"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
@@ -48,18 +48,20 @@ FinishedLabelNoIcons=SteamPACC установлен. Программа рабо
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные задачи:"
-Name: "autostart"; Description: "Запускать SteamPACC вместе с Windows"; GroupDescription: "Дополнительные задачи:"; Flags: unchecked
+Name: "autostart"; Description: "Запускать SteamPACC вместе с Windows"; GroupDescription: "Дополнительные задачи:"
 
 [Files]
 Source: "..\dist\SteamPACC.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\docs\USER_GUIDE.md"; DestDir: "{app}"; DestName: "Руководство.md"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Удалить {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\Руководство"; Filename: "{app}\Руководство.md"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#MyAppName}"; Flags: uninsdeletevalue; Tasks: autostart
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; Flags: nowait postinstall skipifsilent
