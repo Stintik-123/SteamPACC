@@ -44,7 +44,7 @@ WelcomeLabel1=SteamPACC показывает цены игр в разных в�
 WelcomeLabel2=Программа работает в трее и почти не влияет на производительность игр.
 
 [Tasks]
-Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные задачи:"; Flags: checked
+Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные задачи:"
 Name: "autostart"; Description: "Запускать SteamPACC вместе с Windows"; GroupDescription: "Дополнительные задачи:"; Flags: unchecked
 
 [Files]
