@@ -113,6 +113,14 @@ jobs:
           path: dist/SteamPACC-Setup-*.exe
           if-no-files-found: error
 
+      - name: Публикация релиза
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/SteamPACC-Setup-*.exe --generate-notes --title "${{ github.ref_name }}" --verify-tag
+
       - name: "Проверка установщика: установка, автозапуск, удаление"
         shell: bash
         run: |
@@ -157,8 +165,13 @@ jobs:
           echo "=== Устанавливаем: $setup ==="
           with_timeout 180 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG || {
             echo "ОШИБКА: установщик не отработал"
-            echo "--- журнал установщика (Inno Setup) ---"
-            cat dist/SteamPACC-Setup-*.log 2>/dev/null || echo "журнала установщика нет"
+            setup_log=$(ls -t dist/Setup*.txt dist/*.log "Setup Log"*.txt *.log 2>/dev/null | head -1)
+            if [ -n "$setup_log" ]; then
+              echo "--- журнал установщика (Inno Setup): $setup_log ---"
+              cat "$setup_log" || true
+            else
+              echo "журнала установщика нет"
+            fi
             exit 1
           }
           echo "=== Установщик отработал ==="
@@ -243,7 +256,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p diagnostics-installer
-          cp dist/SteamPACC-Setup-*.log diagnostics-installer/ 2>/dev/null || echo "журнала установщика нет"
+          cp -f dist/Setup*.txt dist/*.log "Setup Log"*.txt *.log diagnostics-installer/ 2>/dev/null || true
+          ls -la diagnostics-installer || true
 
       - name: "Сохранение установщика: журнал"
         if: always()
@@ -260,10 +274,3 @@ jobs:
           path: dist/SteamPACC-Console.exe
           if-no-files-found: warn
 
-      - name: Публикация релиза
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "${{ github.ref_name }}" dist/SteamPACC-Setup-*.exe --generate-notes --title "${{ github.ref_name }}" --verify-tag
