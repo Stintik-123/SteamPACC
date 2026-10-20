@@ -119,24 +119,34 @@ def write_report(extra: list[str] | None = None) -> Path:
     return path
 
 
-def _message_box(title: str, text: str, icon: int) -> None:
-    '''Показывает системное окно Windows; вне Windows — печатает в консоль.'''
-    if os.name == 'nt':
-        try:
-            import ctypes
+def _show_dialog(title: str, text: str, icon: int, blocking: bool) -> bool:
+    '''Показывает системное окно Windows; True, если окно было показано.
 
-            ctypes.windll.user32.MessageBoxW(None, str(text), str(title), icon)
-            return
-        except (AttributeError, OSError, ValueError):
-            pass
-    print(str(title) + ': ' + str(text), file=sys.stderr)
+    Окно модальное: пока его не закрыли, программа ждёт. Поэтому в
+    автоматической сборке (переменная CI) и при blocking=False диалог
+    не показывается вовсе, а текст печатается в консоль.
+    '''
+    if os.name != 'nt':
+        return False
+    automatic = os.environ.get('CI', '').strip().lower() in ('1', 'true', 'yes')
+    if not blocking or automatic:
+        return False
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, str(text), str(title), icon)
+        return True
+    except (AttributeError, OSError, ValueError):
+        return False
 
 
-def show_error(title: str, text: str) -> None:
+def show_error(title: str, text: str, blocking: bool = True) -> None:
     '''Показывает пользователю окно с ошибкой.'''
-    _message_box(title, text, ICON_ERROR)
+    if not _show_dialog(title, text, ICON_ERROR, blocking):
+        print(str(title) + ': ' + str(text), file=sys.stderr)
 
 
-def show_message(title: str, text: str) -> None:
+def show_message(title: str, text: str, blocking: bool = True) -> None:
     '''Показывает пользователю окно с сообщением.'''
-    _message_box(title, text, ICON_INFORMATION)
+    if not _show_dialog(title, text, ICON_INFORMATION, blocking):
+        print(str(title) + ': ' + str(text), file=sys.stderr)

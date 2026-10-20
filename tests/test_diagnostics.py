@@ -65,5 +65,11 @@ def test_system_info_has_lines() -> None:
 
 def test_show_error_does_not_raise() -> None:
     '''Показ сообщения не роняет программу даже без Qt.'''
+    diagnostics.show_error('SteamPACC', 'проверка', blocking=False)
+    diagnostics.show_message('SteamPACC', 'проверка', blocking=False)
+
+
+def test_dialog_is_not_shown_in_automatic_build(monkeypatch) -> None:
+    '''В автоматической сборке модальное окно не показывается.'''
+    monkeypatch.setenv('CI', 'true')
     diagnostics.show_error('SteamPACC', 'проверка')
-    diagnostics.show_message('SteamPACC', 'проверка')
