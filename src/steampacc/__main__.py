@@ -30,6 +30,16 @@ SELFTEST_FLAG = '--selftest'
 SMOKE_FLAG = '--smoke'
 
 
+def _prepare_console() -> None:
+    '''Готовит консоль к печати: кодировка и отсутствие потока не должны ломать программу.'''
+    try:
+        from steampacc.diagnostics import configure_console
+
+        configure_console()
+    except Exception:
+        pass
+
+
 def _log_start() -> None:
     '''Пишет в журнал факт запуска программы и её аргументы.'''
     try:
@@ -53,28 +63,35 @@ def _log_path() -> str:
 def _show_fatal(text: str) -> None:
     '''Показывает пользователю окно с ошибкой и пишет её в журнал.'''
     try:
-        from steampacc.diagnostics import log_exception, show_error
+        from steampacc.diagnostics import log_exception, safe_print, show_error
 
         log_exception('Критическая ошибка запуска')
         show_error('SteamPACC - ошибка', text)
     except Exception:
-        print(text, file=sys.stderr)
+        try:
+            from steampacc.diagnostics import safe_print
+
+            safe_print(text, sys.stderr)
+        except Exception:
+            pass
 
 
 def _run_version() -> int:
     '''Печатает версию программы.'''
     from steampacc import __version__
+    from steampacc.diagnostics import safe_print
 
-    print('SteamPACC ' + str(__version__))
+    safe_print('SteamPACC ' + str(__version__))
     return 0
 
 
 def _run_selftest() -> int:
     '''Собирает сведения о системе и записывает отчёт на диск.'''
+    from steampacc.diagnostics import safe_print
     from steampacc.selftest import run_selftest
 
     path = run_selftest()
-    print('Отчёт самопроверки сохранён: ' + str(path))
+    safe_print('Отчёт самопроверки сохранён: ' + str(path))
     return 0
 
 
@@ -88,6 +105,7 @@ def _run_smoke() -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     '''Запускает программу и возвращает код возврата для системы.'''
     args = list(argv) if argv is not None else list(sys.argv[1:])
+    _prepare_console()
     _log_start()
     try:
         if VERSION_FLAG in args:

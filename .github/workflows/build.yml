@@ -48,10 +48,14 @@ jobs:
       - name: Проверка собранной программы без графики
         shell: bash
         run: |
-          set -e
           ./dist/SteamPACC-Console.exe --selftest
+          code=$?
+          echo "Код самопроверки: $code"
           echo "--- Журнал программы ---"
           cat "$APPDATA/SteamPACC/steampacc.log" || echo "Журнала нет"
+          echo "--- Отчёт самопроверки ---"
+          cat "$APPDATA/SteamPACC/samoproverka.txt" || echo "Отчёта нет"
+          exit $code
 
       - name: Проверка графической части на Windows
         shell: bash
@@ -59,11 +63,20 @@ jobs:
         run: |
           set +e
           ./dist/SteamPACC-Console.exe --smoke
-          echo "Код проверки графики: $?"
+          code=$?
+          echo "Код проверки графики: $code"
           echo "--- Журнал программы ---"
           cat "$APPDATA/SteamPACC/steampacc.log" || echo "Журнала нет"
           mkdir -p diagnostics
           cp -r "$APPDATA/SteamPACC/." diagnostics/ 2>/dev/null || echo "Отчётов нет"
+
+      - name: Сбор отчётов проверки
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          cp -r "$APPDATA/SteamPACC/." diagnostics/ 2>/dev/null || echo "Отчётов нет"
+          cat diagnostics/steampacc.log 2>/dev/null || true
 
       - name: Сохранение отчётов проверки
         if: always()

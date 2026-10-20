@@ -15,6 +15,7 @@ import platform
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 #: Имя файла журнала работы.
 LOG_FILE_NAME = 'steampacc.log'
@@ -140,13 +141,51 @@ def _show_dialog(title: str, text: str, icon: int, blocking: bool) -> bool:
         return False
 
 
+def configure_console() -> None:
+    '''Настраивает кодировку консоли, чтобы русский текст печатался без ошибок.
+
+    В системной консоли Windows по умолчанию кодировка cp1252: обычный
+    print русским текстом на ней завершается ошибкой UnicodeEncodeError,
+    и программа падает вместо того, чтобы показать сообщение. Здесь потоки
+    настраиваются на замену непечатаемых символов.
+    '''
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors='replace')
+        except (OSError, ValueError):
+            pass
+
+
+def safe_print(text: str, stream: Any | None = None) -> None:
+    '''Печатает текст в консоль, не падая ни в какой кодировке.
+
+    В сборке --windowed у процесса нет консоли: sys.stdout и sys.stderr
+    равны None, и обычный print завершает программу ошибкой. Здесь
+    отсутствие потока не вызывает исключения, а текст пишется с заменой
+    непечатаемых символов.
+    '''
+    target = stream if stream is not None else sys.stdout
+    if target is None:
+        return
+    try:
+        target.write(str(text) + chr(10))
+        flush = getattr(target, 'flush', None)
+        if flush is not None:
+            flush()
+    except (AttributeError, OSError, UnicodeEncodeError, ValueError):
+        pass
+
+
 def show_error(title: str, text: str, blocking: bool = True) -> None:
     '''Показывает пользователю окно с ошибкой.'''
     if not _show_dialog(title, text, ICON_ERROR, blocking):
-        print(str(title) + ': ' + str(text), file=sys.stderr)
+        safe_print(str(title) + ': ' + str(text), sys.stderr)
 
 
 def show_message(title: str, text: str, blocking: bool = True) -> None:
     '''Показывает пользователю окно с сообщением.'''
     if not _show_dialog(title, text, ICON_INFORMATION, blocking):
-        print(str(title) + ': ' + str(text), file=sys.stderr)
+        safe_print(str(title) + ': ' + str(text), sys.stderr)
