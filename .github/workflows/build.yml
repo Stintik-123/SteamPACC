@@ -29,7 +29,16 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Проверка тестов
-        run: pytest -q
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q
+          code=$?
+          if [ "$code" -eq 5 ]; then
+            echo "Тестов пока нет — шаг пропущен."
+            exit 0
+          fi
+          exit $code
 
       - name: Сборка исполняемого файла
         run: |
@@ -39,10 +48,14 @@ jobs:
         run: choco install innosetup --yes --no-progress
 
       - name: Сборка установщика
-        shell: cmd
+        shell: bash
         run: |
-          set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          %ISCC% installer\SteamPACC.iss
+          ISCC=$(ls "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe" 2>/dev/null | head -n 1)
+          if [ -z "$ISCC" ]; then
+            echo "Inno Setup не найден" >&2
+            exit 1
+          fi
+          "$ISCC" installer/SteamPACC.iss
 
       - name: Сохранение установщика как артефакт
         uses: actions/upload-artifact@v4
