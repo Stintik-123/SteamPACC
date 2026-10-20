@@ -165,13 +165,11 @@ jobs:
           echo "=== Устанавливаем: $setup ==="
           with_timeout 180 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG || {
             echo "ОШИБКА: установщик не отработал"
-            setup_log=$(ls -t dist/Setup*.txt dist/*.log "Setup Log"*.txt *.log 2>/dev/null | head -1)
-            if [ -n "$setup_log" ]; then
-              echo "--- журнал установщика (Inno Setup): $setup_log ---"
-              cat "$setup_log" || true
-            else
-              echo "журнала установщика нет"
-            fi
+            echo "--- поиск журнала установщика (Inno Setup) ---"
+            find dist . "$TEMP" -maxdepth 4 -type f \( -name "Setup Log*.txt" -o -name "*.log" \) -mmin -30 -print0 2>/dev/null | while IFS= read -r -d '' f; do
+              echo "=== $f ==="
+              cat "$f"
+            done
             exit 1
           }
           echo "=== Установщик отработал ==="
@@ -256,7 +254,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p diagnostics-installer
-          cp -f dist/Setup*.txt dist/*.log "Setup Log"*.txt *.log diagnostics-installer/ 2>/dev/null || true
+          find dist . "$TEMP" -maxdepth 4 -type f \( -name "Setup Log*.txt" -o -name "*.log" \) -mmin -30 -print0 2>/dev/null | while IFS= read -r -d '' f; do
+            cp -f "$f" diagnostics-installer/ 2>/dev/null || true
+          done
           ls -la diagnostics-installer || true
 
       - name: "Сохранение установщика: журнал"

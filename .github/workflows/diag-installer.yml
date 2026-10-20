@@ -1,0 +1,111 @@
+name: Диагностика установщика
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'installer/**'
+      - '.github/workflows/diag-installer.yml'
+
+jobs:
+  diag:
+    name: Диагностика установщика
+    runs-on: windows-latest
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Установка Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Подготовка заглушки программы
+        shell: bash
+        run: |
+          mkdir -p dist
+          # Заглушка: графическая программа, которая живёт, пока её не закрыть.
+          # Так ведёт себя настоящая программа в трее.
+          for candidate in /c/Windows/System32/notepad.exe /c/Windows/System32/charmap.exe /c/Windows/System32/mspaint.exe; do
+            if [ -f "$candidate" ]; then
+              cp "$candidate" dist/SteamPACC.exe
+              echo "Заглушка: $candidate"
+              break
+            fi
+          done
+          ls -la dist
+
+      - name: Сборка двух вариантов установщика
+        shell: bash
+        run: |
+          ISCC=""
+          for candidate in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+            if [ -f "$candidate" ]; then ISCC="$candidate"; break; fi
+          done
+          if [ -z "$ISCC" ]; then echo "ОШИБКА: Inno Setup 6 не найден" >&2; exit 1; fi
+          "$ISCC" installer/SteamPACC.iss
+          # Второй вариант: без раздела [Run]. Он покажет, не в нём ли причина зависания.
+          sed -e '/^\[Run\]/,/^$/d' \
+              -e 's/OutputBaseFilename=SteamPACC-Setup-{#MyAppVersion}/OutputBaseFilename=SteamPACC-Setup-NoRun/' \
+              -e 's/AppId={{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}/AppId={{2C9A5F31-77B1-4E2D-9A11-0B5C3D6E8F42}/' \
+              installer/SteamPACC.iss > installer/SteamPACC-NoRun.iss
+          "$ISCC" installer/SteamPACC-NoRun.iss
+          ls -la dist
+
+      - name: Установка варианта без [Run]
+        shell: bash
+        run: |
+          taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+          setup=$(ls dist/SteamPACC-Setup-NoRun-*.exe | head -1)
+          echo "=== Устанавливаем: $setup ==="
+          "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > norun.log 2>&1 &
+          pid=$!
+          sleep 30
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "РЕЗУЛЬТАТ БЕЗ [Run]: УСТАНОВЩИК ВСЁ ЕЩЁ РАБОТАЕТ ЧЕРЕЗ 30 СЕКУНД"
+            echo "--- процессы ---"
+            tasklist | grep -i -E "SteamPACC|Setup|cmd|notepad" || echo "процессов нет"
+            taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+            taskkill //IM notepad.exe //F 2>/dev/null || true
+            taskkill //IM charmap.exe //F 2>/dev/null || true
+            taskkill //IM mspaint.exe //F 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
+          else
+            wait "$pid"
+            echo "РЕЗУЛЬТАТ БЕЗ [Run]: установщик завершился сам, код $?"
+          fi
+          echo "--- журналы Inno Setup ---"
+          find dist . "$TEMP" -maxdepth 4 -type f \( -name "Setup Log*.txt" -o -name "*.log" \) -mmin -40 -print0 2>/dev/null | while IFS= read -r -d '' f; do
+            echo "=== $f ==="
+            cat "$f"
+          done
+
+      - name: Установка обычного варианта
+        shell: bash
+        run: |
+          taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+          taskkill //IM notepad.exe //F 2>/dev/null || true
+          taskkill //IM charmap.exe //F 2>/dev/null || true
+          taskkill //IM mspaint.exe //F 2>/dev/null || true
+          setup=$(ls dist/SteamPACC-Setup-0.*.exe | head -1)
+          echo "=== Устанавливаем: $setup ==="
+          "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > run.log 2>&1 &
+          pid=$!
+          sleep 30
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "РЕЗУЛЬТАТ С [Run]: УСТАНОВЩИК ВСЁ ЕЩЁ РАБОТАЕТ ЧЕРЕЗ 30 СЕКУНД"
+            echo "--- процессы ---"
+            tasklist | grep -i -E "SteamPACC|Setup|cmd|notepad" || echo "процессов нет"
+            taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+            taskkill //IM notepad.exe //F 2>/dev/null || true
+            taskkill //IM charmap.exe //F 2>/dev/null || true
+            taskkill //IM mspaint.exe //F 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
+          else
+            wait "$pid"
+            echo "РЕЗУЛЬТАТ С [Run]: установщик завершился сам, код $?"
+          fi
+          echo "--- журналы Inno Setup ---"
+          find dist . "$TEMP" -maxdepth 4 -type f \( -name "Setup Log*.txt" -o -name "*.log" \) -mmin -40 -print0 2>/dev/null | while IFS= read -r -d '' f; do
+            echo "=== $f ==="
+            cat "$f"
+          done
