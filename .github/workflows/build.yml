@@ -50,11 +50,18 @@ jobs:
       - name: Сборка установщика
         shell: bash
         run: |
-          ISCC=$(ls "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe" 2>/dev/null | head -n 1)
+          ISCC=""
+          for candidate in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+            if [ -f "$candidate" ]; then
+              ISCC="$candidate"
+              break
+            fi
+          done
           if [ -z "$ISCC" ]; then
-            echo "Inno Setup не найден" >&2
+            echo "Ошибка: Inno Setup 6 не найден. Проверенные пути: /c/Program Files (x86)/Inno Setup 6/ISCC.exe и /c/Program Files/Inno Setup 6/ISCC.exe" >&2
             exit 1
           fi
+          echo "Используется ISCC: $ISCC"
           "$ISCC" installer/SteamPACC.iss
 
       - name: Сохранение установщика как артефакт
