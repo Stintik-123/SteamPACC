@@ -1,4 +1,4 @@
-; Скрипт установщика SteamPACC (Inno Setup 6).
+﻿; Скрипт установщика SteamPACC (Inno Setup 6).
 ; Все тексты мастера — на русском языке.
 
 #ifndef MyAppVersion
@@ -42,6 +42,9 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 [CustomMessages]
 WelcomeLabel1=SteamPACC показывает цены игр в разных валютах прямо поверх клиента Steam.
 WelcomeLabel2=Программа работает в трее и почти не влияет на производительность игр.
+FinishedHeadingLabel=Установка завершена
+FinishedLabel=SteamPACC установлен. Программа работает в трее и не мешает играть.
+FinishedLabelNoIcons=SteamPACC установлен. Программа работает в трее и не мешает играть.
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные задачи:"
@@ -63,13 +66,3 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
-
-[Code]
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssPostInstall then
-  begin
-    WizardForm.FinishPage.Caption := 'Установка завершена';
-    WizardForm.FinishPage.Label1.Text := 'SteamPACC установлен. Программа работает в трее и не мешает играть.';
-  end;
-end;
