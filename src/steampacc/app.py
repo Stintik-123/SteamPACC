@@ -18,7 +18,6 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +33,7 @@ from .diagnostics import (
 from .prices import (
     CURRENCY_COUNTRIES,
     CURRENCY_SYMBOLS,
+    SUPPORTED_COUNTRIES,
     Price,
     PriceError,
     fetch_price,
@@ -45,7 +45,7 @@ from .library import iter_library_games, read_library_folders
 try:
     from PySide6.QtCore import QSize, QTimer, Qt, Signal, QObject
     from PySide6.QtGui import (
-        QAction, QBrush, QColor, QFont, QIcon, QLinearGradient,
+        QAction, QBrush, QColor, QFont, QFontMetrics, QIcon, QLinearGradient,
         QPainter, QPainterPath, QPen, QPixmap,
     )
     from PySide6.QtWidgets import (
@@ -57,9 +57,7 @@ try:
         QFormLayout,
         QGroupBox,
         QHBoxLayout,
-        QLabel,
         QMenu,
-        QMessageBox,
         QPushButton,
         QSpinBox,
         QSystemTrayIcon,
@@ -79,8 +77,11 @@ CACHE_FILE_NAME = 'prices.json'
 CACHE_TTL = 900  # 15 minutes in seconds
 
 # Panel positioning
-PANEL_MARGIN = 16
-UPDATE_INTERVAL_MS = 300  # Update every 300ms
+PANEL_MARGIN = 24
+UPDATE_INTERVAL_MS = 2000  # вернул 2 c: сеть пока синхронная, 300 мс = фризы
+
+#: Якоря положения панели оверлея.
+ANCHORS = ('top_left', 'top_right', 'bottom_left', 'bottom_right')
 
 # Steam color palette
 STEAM_DARK_BG = (27, 39, 56)    # #1b2838
@@ -101,69 +102,60 @@ SINGLE_INSTANCE_MUTEX = 'SteamPACC.SingleInstance'
 def overlay_position(
     steam_rect: tuple[int, int, int, int],
     panel_size: tuple[int, int],
+    anchor: str = 'bottom_right',
     margin: int = PANEL_MARGIN,
 ) -> tuple[int, int]:
-    """Calculate overlay position relative to Steam window."""
+    '''Вычисляет положение панели оверлея относительно окна Steam.'''
+    if anchor not in ANCHORS:
+        raise ValueError('Неизвестный якорь панели: ' + str(anchor))
     left, top, right, bottom = steam_rect
     width, height = panel_size
-    
     if right < left or bottom < top:
-        return (0, 0)
-    
-    # Position at bottom-right corner of Steam window
-    x = right - width - margin
-    y = bottom - height - margin
-    
+        raise ValueError('Некорректный прямоугольник окна Steam')
+    if anchor == 'top_left':
+        x, y = left + margin, top + margin
+    elif anchor == 'top_right':
+        x, y = right - width - margin, top + margin
+    elif anchor == 'bottom_left':
+        x, y = left + margin, bottom - height - margin
+    else:
+        x, y = right - width - margin, bottom - height - margin
     return int(x), int(y)
 
 
 def panel_size(lines: list[str], scale: int = 100) -> tuple[int, int]:
-    """Calculate panel size based on content and scale."""
+    '''Оценивает размер панели по строкам текста и масштабу в процентах.'''
     if scale <= 0:
-        scale = 100
-    
-    if not lines:
-        return 200, 80
-    
+        raise ValueError('Масштаб должен быть положительным')
     longest = max((len(line) for line in lines), default=0)
     char_width = max(8 * scale // 100, 1)
     line_height = max(20 * scale // 100, 1)
-    
-    width = max(longest * char_width + 32, 200)
-    height = max(len(lines), 1) * line_height + 20
-    
+    width = max(longest * char_width + 32 * scale // 100, 160 * scale // 100)
+    height = max(len(lines), 1) * line_height + 20 * scale // 100
     return width, height
 
 
 def format_price_lines(prices: dict[str, Price], game_name: str | None = None) -> list[str]:
-    """Format price information into displayable lines."""
+    '''Собирает строки панели: название игры и цены по валютам.'''
     lines: list[str] = []
-    
     if game_name:
-        # Truncate long game names
         if len(game_name) > 40:
-            game_name = game_name[:37] + "..."
+            game_name = game_name[:37] + '...'
         lines.append(game_name)
-        lines.append("-" * len(game_name))
-    
     for code in sorted(prices):
         price = prices[code]
         label = price.currency or code.upper()
-        price_text = format_price(price)
-        lines.append(f"{label}: {price_text}")
-    
+        lines.append(label + ': ' + format_price(price))
     if not lines:
-        lines.append("Цены недоступны")
-    
+        lines.append('Нет данных о ценах')
     return lines
 
 
 def cache_path() -> Path:
-    """Get cache file path."""
-    if os.name == 'nt':
-        base = os.environ.get('APPDATA')
-        if base:
-            return Path(base) / 'SteamPACC' / CACHE_FILE_NAME
+    '''Возвращает путь к файлу кэша цен в каталоге данных приложения.'''
+    base = os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME')
+    if base:
+        return Path(base) / 'SteamPACC' / CACHE_FILE_NAME
     return Path.home() / '.config' / 'SteamPACC' / CACHE_FILE_NAME
 
 
@@ -402,6 +394,7 @@ if QT_AVAILABLE:
             
             # Draw price lines
             painter.setFont(self._font)
+            painter.setPen(QPen(self._colors['text']))  # вернуть цвет текста после сепаратора
             line_height = QFontMetrics(self._font).height()
             
             for line in self._lines:
@@ -432,7 +425,7 @@ if QT_AVAILABLE:
                 ("Английский (USD, EUR, GBP)", ("USD", "EUR", "GBP")),
                 ("Турецкий (TRY, USD, EUR)", ("TRY", "USD", "EUR")),
                 ("Казахстанский (KZT, RUB, USD)", ("KZT", "RUB", "USD")),
-                ("Все валюты", tuple(SUPPORTED_COUNTRIES.keys())),
+                ("Все валюты", tuple(sorted(CURRENCY_COUNTRIES))),
             ]
             
             for text, codes in currency_presets:
@@ -545,9 +538,22 @@ if QT_AVAILABLE:
             self._last_show_time: float = 0
             self._min_show_interval: float = 0.5  # Don't update too frequently
         
+        def _make_icon(self) -> QIcon:
+            '''Рисует простой значок для трея.'''
+            pixmap = QPixmap(32, 32)
+            pixmap.fill(QColor(0, 0, 0, 0))
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setBrush(QColor(*STEAM_ACCENT))
+            painter.setPen(QPen(QColor(*STEAM_DARKER_BG), 2))
+            painter.drawEllipse(2, 2, 28, 28)
+            painter.end()
+            return QIcon(pixmap)
+        
         def _setup_tray(self) -> None:
             """Setup system tray icon."""
             self._tray_icon = QSystemTrayIcon()
+            self._tray_icon.setIcon(self._make_icon())
             self._tray_icon.setToolTip("SteamPACC - Показ цен игр")
             
             # Create menu
@@ -793,8 +799,8 @@ def is_first_launch() -> bool:
         return False
 
 
-def is_autostart_launch(self, arguments: list[str] | None = None) -> bool:
-    """Check if launched from autostart."""
+def is_autostart_launch(arguments: list[str] | None = None) -> bool:
+    '''True, если программа запущена из автозапуска Windows (флаг --autostart).'''
     items = list(sys.argv if arguments is None else arguments)
     return any(item.strip().lower() == '--autostart' for item in items)
 
