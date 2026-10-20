@@ -245,7 +245,7 @@ jobs:
           mkdir -p diagnostics-installer
           cp dist/SteamPACC-Setup-*.log diagnostics-installer/ 2>/dev/null || echo "журнала установщика нет"
 
-      - name: Сохранение установщика: журнал
+      - name: "Сохранение установщика: журнал"
         if: always()
         uses: actions/upload-artifact@v4
         with:
