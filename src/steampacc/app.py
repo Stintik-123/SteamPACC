@@ -18,7 +18,17 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from . import win_api
+from . import __version__ as app_version
 from .config import Settings, load_settings, save_settings
+from .diagnostics import (
+    log_exception,
+    log_message,
+    log_path,
+    show_error,
+    show_message,
+    write_report,
+)
 from .prices import (
     CURRENCY_COUNTRIES,
     CURRENCY_SYMBOLS,
@@ -201,54 +211,38 @@ def find_steam_window() -> tuple[int, int, int, int] | None:
 
     На системах, отличных от Windows, всегда возвращает None.
     '''
-    if os.name != 'nt':
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except ImportError:
-        return None
-    try:
-        user32 = ctypes.windll.user32
-        hwnd = 0
-        for class_name in STEAM_WINDOW_CLASSES:
-            hwnd = user32.FindWindowW(ctypes.c_wchar_p(class_name), None)
-            if hwnd:
-                break
+    for class_name in STEAM_WINDOW_CLASSES:
+        try:
+            hwnd = win_api.find_window_by_class(class_name)
+        except win_api.WinApiError:
+            return None
         if not hwnd:
-            return None
-        rect = wintypes.RECT()
-        if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
-            return None
-    except (AttributeError, OSError, ValueError):
-        return None
-    return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+            continue
+        rect = win_api.window_rect(hwnd)
+        if rect is not None:
+            return rect
+    return None
 
 
-def welcome_marker_path() -> Path:
-    '''Путь к файлу-метке: показывает, что подсказка уже показывалась.'''
-    base = os.environ.get('APPDATA') or os.environ.get('XDG_CONFIG_HOME')
-    if base:
-        return Path(base) / 'SteamPACC' / 'welcome.done'
-    return Path.home() / '.config' / 'SteamPACC' / 'welcome.done'
+def is_autostart_launch(arguments: list[str] | None = None) -> bool:
+    '''True, если программа запущена из автозапуска Windows.
+
+    При автозапуске окно-подсказку не показываем: пользователь и так
+    запустил программу сам, когда захотел увидеть оверлей.
+    '''
+    items = list(sys.argv if arguments is None else arguments)
+    return any(item.strip().lower() == '--autostart' for item in items)
 
 
 def foreground_title() -> str:
     '''Возвращает заголовок активного окна; вне Windows возвращает пустую строку.'''
-    if os.name != 'nt':
+    hwnd = win_api.foreground_window()
+    if not hwnd:
         return ''
     try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return ''
-        length = user32.GetWindowTextLengthW(hwnd)
-        buffer = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buffer, length + 1)
-    except (AttributeError, OSError, ValueError):
+        return win_api.window_title(hwnd)
+    except win_api.WinApiError:
         return ''
-    return buffer.value
 
 
 def foreground_window() -> tuple[int, tuple[int, int, int, int], str, str] | None:
@@ -256,41 +250,27 @@ def foreground_window() -> tuple[int, tuple[int, int, int, int], str, str] | Non
 
     Вне Windows всегда возвращает None.
     '''
-    if os.name != 'nt':
+    hwnd = win_api.foreground_window()
+    if not hwnd:
         return None
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return None
-        rect = wintypes.RECT()
-        if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
-            return None
-        length = user32.GetWindowTextLengthW(hwnd)
-        buffer = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buffer, length + 1)
-        class_buffer = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(hwnd, class_buffer, 256)
-    except (AttributeError, OSError, ValueError):
+        rect = win_api.window_rect(hwnd)
+        title = win_api.window_title(hwnd)
+        class_name = win_api.window_class(hwnd)
+    except win_api.WinApiError:
         return None
-    box = (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
-    return int(hwnd), box, buffer.value, class_buffer.value
+    if rect is None:
+        return None
+    return hwnd, rect, title, class_name
 
 
 def is_minimized(hwnd: int) -> bool:
     '''True, если окно свёрнуто; вне Windows всегда False.'''
-    if os.name != 'nt':
-        return False
     try:
-        import ctypes
-        from ctypes import wintypes
-
-        return bool(ctypes.windll.user32.IsIconic(wintypes.HWND(hwnd)))
-    except (AttributeError, OSError, ValueError):
+        return win_api.is_minimized(hwnd)
+    except win_api.WinApiError:
         return False
+
 
 
 if QT_AVAILABLE:
@@ -397,6 +377,7 @@ if QT_AVAILABLE:
                 'в оконный режим или в полноэкранный без рамки.',
                 '',
                 'Настройки валют - правый клик по значку в трее.',
+                'Не видно оверлея - там же пункт Диагностика, пришлите отчёт.',
             ]))
             text.setWordWrap(True)
             layout.addWidget(text)
@@ -418,6 +399,7 @@ if QT_AVAILABLE:
             self._window = OverlayWindow(self._settings)
             self._games: dict[str, int] = {}
             self._appid: int | None = None
+            self._state = ''
             self._timer = QTimer()
             self._timer.timeout.connect(self._tick)
             self._tray = QSystemTrayIcon(self._make_icon(), application)
@@ -426,6 +408,10 @@ if QT_AVAILABLE:
             action_refresh.triggered.connect(self._tick)
             action_show = QAction('Показать подсказку', menu)
             action_show.triggered.connect(self._show_hint_now)
+            action_guide = QAction('Как пользоваться', menu)
+            action_guide.triggered.connect(self._show_guide)
+            action_report = QAction('Диагностика', menu)
+            action_report.triggered.connect(self._write_report)
             action_hide = QAction('Скрыть оверлей', menu)
             action_hide.triggered.connect(self._window.hide)
             action_settings = QAction('Настройки...', menu)
@@ -435,8 +421,10 @@ if QT_AVAILABLE:
             menu.addAction(action_refresh)
             menu.addSeparator()
             menu.addAction(action_show)
+            menu.addAction(action_guide)
             menu.addAction(action_hide)
             menu.addAction(action_settings)
+            menu.addAction(action_report)
             menu.addSeparator()
             menu.addAction(action_quit)
             self._tray.setContextMenu(menu)
@@ -456,10 +444,17 @@ if QT_AVAILABLE:
             return QIcon(pixmap)
 
         def start(self) -> None:
-            '''Запускает обновление оверлея и показывает подсказку при первом запуске.'''
+            '''Запускает обновление оверлея и показывает окно-подсказку.
+
+            При запуске из автозапуска Windows окно не показывается: программа
+            остаётся в трее. При ручном запуске показывается окно с
+            инструкцией, чтобы было видно, что программа работает.
+            '''
+            log_message('Приложение запущено, автозапуск: ' + str(is_autostart_launch()))
             self._tick()
             self._timer.start(2000)
-            self._show_welcome_once()
+            if not is_autostart_launch():
+                self._show_guide()
             self._tray.showMessage(
                 'SteamPACC',
                 'SteamPACC запущен и ждёт в трее. Оверлей появится поверх окна игры.',
@@ -467,18 +462,28 @@ if QT_AVAILABLE:
                 6000,
             )
 
-        def _show_welcome_once(self) -> None:
-            '''Показывает окно-подсказку при первом запуске после установки.'''
-            marker = welcome_marker_path()
-            try:
-                if marker.exists():
-                    return
-                marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text('1', encoding='utf-8')
-            except OSError:
-                return
+        def _show_guide(self) -> None:
+            '''Показывает окно с инструкцией: как пользоваться программой.'''
+            if self._welcome_window is not None:
+                self._welcome_window.close()
             self._welcome_window = WelcomeWindow()
             self._welcome_window.show()
+            self._welcome_window.raise_()
+
+        def _write_report(self) -> None:
+            '''Собирает отчёт о работе и показывает, где лежит файл.'''
+            lines = [
+                'Игр найдено: ' + str(len(self._games)),
+                'Валюты в оверлее: ' + ', '.join(watch_currencies(self._settings)),
+                'Файл журнала: ' + str(log_path()),
+            ]
+            path = write_report(lines)
+            log_message('Отчёт записан: ' + str(path))
+            show_message(
+                'SteamPACC - диагностика',
+                'Отчёт сохранён: ' + str(path) + chr(10)
+                + 'Пришлите этот файл, чтобы разобраться, почему оверлей не виден.',
+            )
 
         def _open_settings(self) -> None:
             '''Открывает окно выбора валют.'''
@@ -502,8 +507,8 @@ if QT_AVAILABLE:
             try:
                 self._settings = load_settings()
                 self._update_overlay()
-            except (OSError, ValueError, RuntimeError, PriceError):
-                pass
+            except (OSError, ValueError, RuntimeError, PriceError) as error:
+                log_message('Ошибка обновления оверлея: ' + str(error))
 
         def _update_overlay(self) -> None:
             '''Определяет активную игру и ставит панель поверх окна игры.
@@ -517,15 +522,19 @@ if QT_AVAILABLE:
                 return
             hwnd, rect, title, class_name = info
             if class_name in STEAM_WINDOW_CLASSES:
+                self._set_state('Активно окно Steam - ждём запуска игры')
                 self._show_hint(rect)
                 return
             appid = self._detect_appid(title)
             if appid is None:
+                self._set_state('Активное окно не игра: ' + (title or 'без заголовка'))
                 self._window.hide()
                 return
             if is_minimized(hwnd):
+                self._set_state('Игра свёрнута: ' + title)
                 self._window.hide()
                 return
+            self._set_state('Игра определена: ' + title + ' (appid ' + str(appid) + ')')
             prices = self._prices_for(appid)
             lines = format_price_lines(prices, self._game_name(appid))
             self._window.set_lines(lines)
@@ -535,6 +544,13 @@ if QT_AVAILABLE:
             self._window.move(x, y)
             self._window.show()
             self._window.raise_()
+
+        def _set_state(self, text: str) -> None:
+            '''Записывает в журнал смену состояния, не повторяя одно и то же.'''
+            if text == self._state:
+                return
+            self._state = text
+            log_message(text)
 
         def _show_hint(self, rect: tuple[int, int, int, int]) -> None:
             '''Показывает над окном Steam подсказку, как включить оверлей.'''
@@ -622,14 +638,27 @@ if QT_AVAILABLE:
 
 def run() -> int:
     '''Запускает графическую часть приложения и возвращает код возврата.'''
+    log_message('Запуск SteamPACC, версия ' + app_version())
     if not QT_AVAILABLE:
-        print(
-            'SteamPACC: не установлена библиотека PySide6, программа завершает работу.',
-            file=sys.stderr,
+        log_message('PySide6 недоступна: графическая часть не запускается')
+        show_error(
+            'SteamPACC',
+            'Не установлена библиотека PySide6.' + chr(10)
+            + 'Переустановите программу, чтобы она заработала правильно.',
         )
         return 1
-    application = QApplication(sys.argv)
-    application.setQuitOnLastWindowClosed(False)
-    controller = AppController(application)
-    controller.start()
-    return int(application.exec())
+    try:
+        win_api.set_dpi_awareness()
+        application = QApplication(sys.argv)
+        application.setQuitOnLastWindowClosed(False)
+        controller = AppController(application)
+        controller.start()
+        return int(application.exec())
+    except Exception as error:
+        log_exception('Ошибка при запуске приложения')
+        show_error(
+            'SteamPACC - ошибка',
+            'Не удалось запустить программу: ' + str(error) + chr(10)
+            + 'Подробности в файле: ' + str(log_path()),
+        )
+        return 1

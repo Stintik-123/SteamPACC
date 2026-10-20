@@ -1,4 +1,4 @@
-'''Проверки логики оверлея: активное окно, подсказка, валюты и страны.'''
+'''Проверки логики оверлея: активное окно, запуск, валюты и страны.'''
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import os
 
 from steampacc.app import (
     foreground_window,
+    is_autostart_launch,
     is_minimized,
     watch_currencies,
-    welcome_marker_path,
 )
 from steampacc.config import Settings
 from steampacc.prices import CURRENCY_COUNTRIES, CURRENCY_SYMBOLS
@@ -28,11 +28,12 @@ def test_is_minimized_is_false_outside_windows() -> None:
     assert is_minimized(0) is False
 
 
-def test_welcome_marker_lives_in_app_data() -> None:
-    '''Метка первого запуска лежит в каталоге данных приложения.'''
-    marker = welcome_marker_path()
-    assert marker.name == 'welcome.done'
-    assert marker.parent.name == 'SteamPACC'
+def test_autostart_launch_detected_by_flag() -> None:
+    '''Флаг --autostart означает запуск из автозапуска Windows.'''
+    assert is_autostart_launch(['SteamPACC.exe', '--autostart']) is True
+    assert is_autostart_launch(['SteamPACC.exe', '--AUTOSTART']) is True
+    assert is_autostart_launch(['SteamPACC.exe']) is False
+    assert is_autostart_launch([]) is False
 
 
 def test_default_currencies_have_countries() -> None:

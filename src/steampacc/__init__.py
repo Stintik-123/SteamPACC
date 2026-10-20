@@ -1,11 +1,11 @@
-"""SteamPACC — оверлей цен в разных валютах поверх клиента Steam."""
+'''SteamPACC: набор инструментов для работы с библиотекой Steam.
 
-__version__ = "0.1.0"
+Пакет накапливает модули ядра приложения. Каждый модуль использует только
+стандартную библиотеку Python и читает файлы Steam, ничего в них не меняя.
+'''
 
-# Имя папки с настройками в профиле пользователя
-APP_DIR_NAME = "SteamPACC"
+__version__ = '0.1.2'
 
-# Класс главного окна клиента Steam, по которому ищется окно для оверлея
-STEAM_WINDOW_CLASS = "STEAMMAINWINDOW"
+APP_DIR_NAME = 'SteamPACC'
 
-__all__ = ["__version__", "APP_DIR_NAME", "STEAM_WINDOW_CLASS"]
+STEAM_WINDOW_CLASS = 'STEAMMAINWINDOW'
