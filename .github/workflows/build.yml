@@ -116,12 +116,17 @@ jobs:
       - name: "Проверка установщика: установка, автозапуск, удаление"
         shell: bash
         run: |
-          # Команда с ограничением по времени: установщик в тихом режиме может
-          # ждать закрытия программы и висеть бесконечно.
+          # Ограничение по времени: установщик в тихом режиме может ждать
+          # закрытия программы и висеть бесконечно.
+          # Вывод программы перенаправляем в файл, а stdin закрываем: иначе
+          # запущенное приложение держит канал шага открытым, и CI зависает
+          # в ожидании конца вывода.
           with_timeout() {
             limit="$1"
             shift
-            "$@" &
+            log="$RUNNER_TEMP/step.log"
+            : > "$log"
+            "$@" > "$log" 2>&1 < /dev/null &
             pid=$!
             waited=0
             while kill -0 "$pid" 2>/dev/null; do
@@ -129,15 +134,21 @@ jobs:
                 echo "ТАЙМАУТ ${limit}c: $*"
                 taskkill //IM SteamPACC.exe //F 2>/dev/null || true
                 kill -9 "$pid" 2>/dev/null || true
+                echo "--- вывод команды ---"
+                cat "$log" || true
                 return 124
               fi
               sleep 5
               waited=$((waited + 5))
             done
             wait "$pid"
-            return $?
+            code=$?
+            echo "--- вывод команды ---"
+            cat "$log" || true
+            return $code
           }
 
+          taskkill //IM SteamPACC.exe //F 2>/dev/null || true
           setup=$(ls dist/SteamPACC-Setup-*.exe | head -1)
           echo "=== Устанавливаем: $setup ==="
           with_timeout 300 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART || {
@@ -149,7 +160,7 @@ jobs:
           appid="{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}_is1"
           location=""
           for root in "HKCU" "HKLM"; do
-            value=$(reg query "$root\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appid" //v InstallLocation 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+            value=$(reg query "$root\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$appid" //v InstallLocation 2>/dev/null | tr -d '\\r' | sed -n 's/.*REG_SZ *//p')
             if [ -n "$value" ]; then
               location="$value"
               break
@@ -161,14 +172,14 @@ jobs:
             exit 1
           fi
 
-          exe="$location\SteamPACC.exe"
+          exe="$location\\SteamPACC.exe"
           if [ ! -f "$exe" ]; then
             echo "ОШИБКА: нет файла программы: $exe"
             exit 1
           fi
           echo "OK: программа установлена: $exe"
 
-          runvalue=$(reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          runvalue=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\\r' | sed -n 's/.*REG_SZ *//p')
           echo "Автозапуск: $runvalue"
           if [ -z "$runvalue" ]; then
             echo "ОШИБКА: ключ автозапуска SteamPACC не создан"
@@ -183,6 +194,12 @@ jobs:
             *) echo "ОШИБКА: в автозапуске нет полного пути к программе"; exit 1 ;;
           esac
 
+          if tasklist | grep -qi SteamPACC.exe; then
+            echo "OK: процесс SteamPACC.exe запущен сразу после установки"
+          else
+            echo "ВНИМАНИЕ: процесс SteamPACC.exe не найден сразу после установки"
+          fi
+
           rm -f "$APPDATA/SteamPACC/samoproverka.txt" 2>/dev/null || true
           with_timeout 60 "$exe" --selftest || echo "Приложение ответило кодом: $?"
           if [ -f "$APPDATA/SteamPACC/samoproverka.txt" ]; then
@@ -191,6 +208,12 @@ jobs:
             echo "ОШИБКА: установленная программа не отвечает"
             exit 1
           fi
+          if grep -q "Traceback" "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null; then
+            echo "ОШИБКА: в журнале программы есть Traceback"
+            cat "$APPDATA/SteamPACC/steampacc.log" || true
+            exit 1
+          fi
+          echo "OK: в журнале программы нет Traceback"
 
           echo "=== Удаляем программу ==="
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
@@ -202,7 +225,7 @@ jobs:
           fi
           with_timeout 180 "$uninstaller" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART || echo "Деинсталлятор вернул код: $?"
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
-          left=$(reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          left=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\\r' | sed -n 's/.*REG_SZ *//p')
           if [ -n "$left" ]; then
             echo "ОШИБКА: после удаления ключ автозапуска остался: $left"
             exit 1

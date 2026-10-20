@@ -2,7 +2,7 @@
 ; Все тексты мастера — на русском языке.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.3"
+  #define MyAppVersion "0.1.4"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
@@ -18,7 +18,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
@@ -34,6 +34,10 @@ SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
 AppMutex=SteamPACC.SingleInstance
+; Установка без прав администратора: личная утилита ставится в каталог
+; пользователя. Прежние права админа приводили к зависанию установщика
+; в CI и к лишнему запросу UAC при установке вручную.
+PrivilegesRequired=lowest
 VersionInfoVersion={#MyAppVersion}
 
 [Languages]
