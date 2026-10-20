@@ -1,96 +1,95 @@
-; Скрипт установщика SteamPACC (Inno Setup 6).
-; Все тексты мастера — на русском языке.
-
-#ifndef MyAppVersion
-  #define MyAppVersion "0.1.5"
-#endif
-#define MyAppName "SteamPACC"
-#define MyAppPublisher "Stintik-123"
-#define MyAppURL "https://github.com/Stintik-123/SteamPACC"
-#define MyAppExeName "SteamPACC.exe"
+; SteamPACC Installer Script
+; Inno Setup script for creating Windows installer
+; Encoding: UTF-8
 
 [Setup]
-AppId={{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
-AppUpdatesURL={#MyAppURL}
-DefaultDirName={localappdata}\Programs\{#MyAppName}
-DefaultGroupName={#MyAppName}
-DisableProgramGroupPage=yes
+; Main installer settings
+AppName=SteamPACC
+AppVersion=0.1.5
+AppPublisher=Stintik-123
+AppPublisherURL=https://github.com/Stintik-123/SteamPACC
+AppSupportURL=https://github.com/Stintik-123/SteamPACC/issues
+AppUpdatesURL=https://github.com/Stintik-123/SteamPACC/releases
+DefaultDirName={pf}\SteamPACC
+DefaultGroupName=SteamPACC
 OutputDir=..\dist
-OutputBaseFilename=SteamPACC-Setup-{#MyAppVersion}
-Compression=lzma2
+OutputBaseFilename=SteamPACC-Setup-{#AppVersion}
+SetupIconFile=icon.ico
+Compression=lzma2/ultra64
 SolidCompression=yes
-WizardStyle=modern
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayIcon={app}\{#MyAppExeName}
-LicenseFile=..\LICENSE
-SetupLogging=yes
-CloseApplications=yes
-RestartApplications=no
-; Установка без прав администратора: личная утилита ставится в каталог
-; пользователя. Прежние права админа приводили к зависанию установщика
-; в CI и к лишнему запросу UAC при установке вручную.
-PrivilegesRequired=lowest
-VersionInfoVersion={#MyAppVersion}
+InternalCompressLevel=ultra64
 
+; Language
 [Languages]
-Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+Name: "russian"; MessagesFile: "compilator:Languages\Russian.isl"
+Name: "english"; MessagesFile: "compilator:Languages\English.isl"
 
-[CustomMessages]
-WelcomeLabel1=SteamPACC показывает цены игр в разных валютах прямо поверх клиента Steam.
-WelcomeLabel2=Программа работает в трее и почти не влияет на производительность игр.
-FinishedHeadingLabel=Установка завершена
-FinishedLabel=SteamPACC установлен и уже запущен: окно-подсказка покажет, как им пользоваться.
-FinishedLabelNoIcons=SteamPACC установлен и уже запущен: окно-подсказка покажет, как им пользоваться.
-FinishedHint=Программа живёт в трее. Если значка не видно, нажмите стрелку ^ рядом с часами: там скрытые значки.
+; Setup types
+[Types]
+Name: "full"; Description: "Full installation"
+Name: "compact"; Description: "Compact installation"
+Name: "custom"; Description: "Custom installation"; Flags: IsCustom
 
-[Tasks]
-Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные задачи:"
-Name: "autostart"; Description: "Запускать SteamPACC вместе с Windows"; GroupDescription: "Дополнительные задачи:"
+; Components
+[Components]
+Name: "main"; Description: "Main program"; Types: full compact custom; Flags: Fixed
+Name: "desktop"; Description: "Desktop shortcut"; Types: full custom
+Name: "startmenu"; Description: "Start Menu shortcut"; Types: full compact custom; Flags: Fixed
+Name: "autostart"; Description: "Auto-start with Windows"; Types: full custom
 
+; Files
 [Files]
-Source: "..\dist\SteamPACC.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\docs\USER_GUIDE.md"; DestDir: "{app}"; DestName: "Руководство.md"; Flags: ignoreversion
-Source: "..\installer\diagnostika.cmd"; DestDir: "{app}"; DestName: "Диагностика.cmd"; Flags: ignoreversion
+; Main executable
+Source: "..\dist\SteamPACC.exe"; DestDir: "{app}"; Components: main; Flags: ignoreversion
+Source: "..\dist\SteamPACC-Console.exe"; DestDir: "{app}"; Components: main; Flags: ignoreversion
 
+; License
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: isreadme
+
+; Icon
+Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+; Documentation
+Source: "..\README.md"; DestDir: "{app}"; Flags: isreadme
+
+; Default config
+Source: "default_config.json"; DestDir: "{app}"; Flags: ignoreversion
+
+; Icons
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Удалить {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{group}\Руководство"; Filename: "{app}\Руководство.md"
-Name: "{group}\Диагностика"; Filename: "{app}\Диагностика.cmd"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; Desktop shortcut
+Name: "{group}\SteamPACC"; Filename: "{app}\SteamPACC.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}"; Components: desktop
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart
+; Start Menu shortcut
+Name: "{group}\SteamPACC"; Filename: "{app}\SteamPACC.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}"; Components: startmenu
+Name: "{group}\Uninstall"; Filename: "{uninstallexe}"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}"; Components: startmenu
 
-[Run]
-; Программа запускается сразу после установки, без флажка на странице
-; "Готово": флажок postinstall по умолчанию снят, и программа не стартовала.
-; Запуск идёт через cmd /c start: программа должна отделиться от
-; установщика. Иначе Inno Setup ждёт завершения запущенного процесса,
-; а программа живёт в трее постоянно: установщик зависал на 300 секунд
-; и не доходил до конца.
-Filename: "{cmd}"; Parameters: "/c start """"{app}\{#MyAppExeName}"""; Description: "Запустить {#MyAppName}"; Flags: nowait runhidden
+; Auto-start shortcut
+Name: "{commondesktop}\SteamPACC"; Filename: "{app}\SteamPACC.exe"; IconFilename: "{app}\icon.ico"; WorkingDir: "{app}"; Components: autostart; Flags: onlyifdoesntexist; Parameters: "--autostart"
 
+; Uninstall
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+Type: files; Name: "{commondesktop}\SteamPACC.lnk"
+Type: files; Name: "{commonstartmenu}\SteamPACC.lnk"
 
-[Code]
-{ Перед установкой закрываем ранее запущенную копию программы.
-  Пока программа работает, её файлы заняты, и установщик ждёт
-  закрытия приложения: в тихом режиме это превращается в
-  бесконечное ожидание. }
-function InitializeSetup(): Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result := True;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(2000);
-end;
+; Registry
+[Registry]
+; Auto-start
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "SteamPACC"; ValueData: "{app}\SteamPACC.exe --autostart"; Components: autostart; Flags: uninsdeletevalue
+
+; Custom messages for Russian
+[CustomMessages]
+Russian.AppName=SteamPACC
+Russian.AppVersion=Версия {#AppVersion}
+Russian.InfoBeforeLabel=Добро пожаловать!
+Russian.InfoBeforeText=SteamPACC - программа для отображения цен игр в Steam в разных валютах.\n\nОна работает как оверлей поверх окна Steam и показывает цены автоматически при наведении на игру.
+Russian.InfoAfterLabel=Установка завершена!
+Russian.InfoAfterText=SteamPACC установлен и готов к работе.\n\nЧтобы начать:\n1. Запустите Steam\n2. Запустите SteamPACC\n3. Наведите на любую игру - цены появятся автоматически\n\nДля настройки: кликните правой кнопкой на иконку в трее
+
+; English messages
+[Messages]
+InfoBeforeLabel=Welcome!
+InfoBeforeText=SteamPACC displays game prices in different currencies as an overlay on Steam window.\n\nIt works automatically - just hover over any game in Steam to see prices.
+InfoAfterLabel=Setup Complete!
+InfoAfterText=SteamPACC has been successfully installed.\n\nTo start using:\n1. Launch Steam\n2. Launch SteamPACC\n3. Hover over any game - prices will appear automatically\n\nTo configure: right-click the tray icon

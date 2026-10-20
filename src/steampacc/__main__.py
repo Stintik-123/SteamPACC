@@ -1,112 +1,109 @@
-'''Точка входа SteamPACC.
+"""Точка входа SteamPACC.
 
-Запуск пакета: ``python -m steampacc``.
-В собранном виде это SteamPACC.exe, который запускает тот же код.
+Запуск программы: ``python -m steampacc``.
+В сборанном виде это SteamPACC.exe, который запускает этот код.
 
-Модуль написан так, чтобы программа никогда не умирала молча.
-Первым делом в журнал пишется факт запуска, а любая ошибка
-показывается пользователю окном. В сборке --windowed стандартный
-поток ошибок не виден, поэтому рассчитывать только на него нельзя.
+Модуль настраивает консоль и обрабатывает аргументы командной строки.
 
-Служебные ключи запуска:
+Ключи запуска:
 
 * ``--version`` - напечатать версию и выйти;
-* ``--selftest`` - собрать сведения о системе и записать отчёт;
-* ``--smoke`` - проверить, что графическая часть поднимается.
-'''
+* ``--selftest`` - создать отчёт о системе и выйти;
+* ``--smoke`` - проверить, что графическая часть работает;
+* ``--autostart`` - флаг, что запуск из автозагрузки Windows.
+"""
 
 from __future__ import annotations
 
 import sys
 from typing import Sequence
 
-#: Ключ запуска: показать версию.
+#: Ключ запуска: напечатать версию.
 VERSION_FLAG = '--version'
 
-#: Ключ запуска: собрать отчёт о состоянии системы.
+#: Ключ запуска: создать отчёт о системе.
 SELFTEST_FLAG = '--selftest'
 
-#: Ключ запуска: проверить запуск графической части.
+#: Ключ запуска: проверить графическую часть.
 SMOKE_FLAG = '--smoke'
+
+#: Ключ запуска: автозапуск из Windows.
+AUTOSTART_FLAG = '--autostart'
 
 
 def _prepare_console() -> None:
-    '''Готовит консоль к печати: кодировка и отсутствие потока не должны ломать программу.'''
+    """Настраивает консоль для красивого вывода: кодировка и отступы."""
     try:
         from steampacc.diagnostics import configure_console
-
         configure_console()
     except Exception:
         pass
 
 
 def _log_start() -> None:
-    '''Пишет в журнал факт запуска программы и её аргументы.'''
+    """Пишет в журнал факт запуска программы и её аргументы."""
     try:
         from steampacc.diagnostics import log_message
-
         log_message('Старт SteamPACC, аргументы: ' + ' '.join(sys.argv))
     except Exception:
         pass
 
 
 def _log_path() -> str:
-    '''Возвращает путь к журналу работы программы.'''
+    """Возвращает путь к файлу журнала."""
     try:
         from steampacc.diagnostics import log_path
-
         return str(log_path())
     except Exception:
         return 'неизвестно'
 
 
 def _show_fatal(text: str) -> None:
-    '''Показывает пользователю окно с ошибкой и пишет её в журнал.'''
+    """Показывает фатальную ошибку пользователю и пишет в журнал."""
     try:
         from steampacc.diagnostics import log_exception, safe_print, show_error
-
         log_exception('Критическая ошибка запуска')
         show_error('SteamPACC - ошибка', text)
     except Exception:
         try:
             from steampacc.diagnostics import safe_print
-
             safe_print(text, sys.stderr)
         except Exception:
             pass
 
 
 def _run_version() -> int:
-    '''Печатает версию программы.'''
+    """Печатает версию и выходит."""
     from steampacc import __version__
     from steampacc.diagnostics import safe_print
-
     safe_print('SteamPACC ' + str(__version__))
     return 0
 
 
 def _run_selftest() -> int:
-    '''Собирает сведения о системе и записывает отчёт на диск.'''
+    """Создаёт отчёт о системе и выходит."""
     from steampacc.diagnostics import safe_print
     from steampacc.selftest import run_selftest
-
     path = run_selftest()
-    safe_print('Отчёт самопроверки сохранён: ' + str(path))
+    safe_print('Отчёт о системе создан: ' + str(path))
     return 0
 
 
 def _run_smoke() -> int:
-    '''Проверяет, что графическая часть поднимается.'''
+    """Проверяет, что графическая часть работает."""
     from steampacc.app import smoke_test
-
     return int(smoke_test())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    '''Запускает программу и возвращает код возврата для системы.'''
+    """Запускает программу и возвращает код выхода.
+    
+    Запускает графический интерфейс, если не переданы специальные ключи.
+    """
     args = list(argv) if argv is not None else list(sys.argv[1:])
     _prepare_console()
     _log_start()
+    
     try:
         if VERSION_FLAG in args:
             return _run_version()
@@ -114,19 +111,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_selftest()
         if SMOKE_FLAG in args:
             return _run_smoke()
+        
+        # Normal launch
         from steampacc.app import run
-
         return int(run())
+        
     except ImportError as error:
         _show_fatal(
-            'Не удалось загрузить графическую часть программы: ' + str(error) + chr(10)
-            + 'Подробности в файле: ' + str(_log_path())
+            'Не удалось загрузить графическую библиотеку: ' + str(error) + chr(10) +
+            'Подробности в файле: ' + str(_log_path())
         )
         return 1
     except Exception as error:
         _show_fatal(
-            'Не удалось запустить программу: ' + str(error) + chr(10)
-            + 'Подробности в файле: ' + str(_log_path())
+            'Не удалось запустить программу: ' + str(error) + chr(10) +
+            'Подробности в файле: ' + str(_log_path())
         )
         return 1
 
