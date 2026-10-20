@@ -1,0 +1,60 @@
+name: Сборка SteamPACC
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Сборка установщика
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Получение исходного кода
+        uses: actions/checkout@v4
+
+      - name: Установка Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Проверка тестов
+        run: pytest -q
+
+      - name: Сборка исполняемого файла
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name SteamPACC --paths src src/steampacc/__main__.py
+
+      - name: Установка Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      - name: Сборка установщика
+        shell: cmd
+        run: |
+          set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          %ISCC% installer\SteamPACC.iss
+
+      - name: Сохранение установщика как артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamPACC-Setup
+          path: dist/SteamPACC-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Публикация релиза
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/SteamPACC-Setup-*.exe --generate-notes --title "${{ github.ref_name }}" --verify-tag

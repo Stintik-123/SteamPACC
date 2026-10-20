@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+ENV/
+
+# Сборка
+build/
+dist/
+*.spec
+*.manifest
+
+# Тесты и кэш
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Яйца
+*.egg-info/
+.eggs/
+
+# Локальное
+*.log

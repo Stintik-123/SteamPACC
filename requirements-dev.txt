@@ -1,0 +1,5 @@
+# Зависимости для разработки и сборки
+-r requirements.txt
+
+pyinstaller>=6.6
+pytest>=8.0
