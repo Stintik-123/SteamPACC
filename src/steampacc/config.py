@@ -43,6 +43,7 @@ class Settings:
     show_fps: bool = True
     update_interval: int = 60
     launch_with_steam: bool = False
+    currencies: tuple[str, ...] = ('RUB', 'USD', 'EUR')
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -104,6 +105,21 @@ def settings_path() -> Path:
     return Path.home() / '.config' / APP_DIR_NAME / SETTINGS_FILE_NAME
 
 
+def _as_str_list(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
+    '''Приводит значение к списку строк; неподходящее значение даёт умолчание.'''
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        return default
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            code = item.strip().upper()
+            if code and code not in result:
+                result.append(code)
+        if len(result) >= 8:
+            break
+    return tuple(result) if result else default
+
+
 def _from_mapping(data: dict) -> Settings:
     '''Собирает настройки из словаря, отбрасывая лишние и неверные значения.'''
     base = Settings()
@@ -118,6 +134,7 @@ def _from_mapping(data: dict) -> Settings:
         update_interval=int(_clamp(
             _as_int(data.get('update_interval'), base.update_interval), MIN_INTERVAL, MAX_INTERVAL)),
         launch_with_steam=_as_bool(data.get('launch_with_steam'), base.launch_with_steam),
+        currencies=_as_str_list(data.get('currencies'), base.currencies),
     )
 
 
@@ -149,6 +166,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         'show_fps': settings.show_fps,
         'update_interval': settings.update_interval,
         'launch_with_steam': settings.launch_with_steam,
+        'currencies': list(settings.currencies),
     }
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     return target
@@ -164,6 +182,7 @@ def apply_changes(settings: Settings, changes: dict) -> Settings:
         'show_fps': settings.show_fps,
         'update_interval': settings.update_interval,
         'launch_with_steam': settings.launch_with_steam,
+        'currencies': list(settings.currencies),
     }
     merged.update(changes)
     return _from_mapping(merged)

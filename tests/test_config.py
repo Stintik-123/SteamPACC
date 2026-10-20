@@ -72,3 +72,25 @@ def test_settings_path_points_to_file() -> None:
     path = settings_path()
     assert isinstance(path, Path)
     assert path.name == 'config.json'
+
+
+def test_settings_have_default_currencies() -> None:
+    assert Settings().currencies == ('RUB', 'USD', 'EUR')
+
+
+def test_load_settings_reads_currencies(tmp_path: Path) -> None:
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({'currencies': ['usd', 'eur', 'usd']}), encoding='utf-8')
+    settings = load_settings(path)
+    assert settings.currencies == ('USD', 'EUR')
+
+
+def test_save_and_load_keeps_currencies(tmp_path: Path) -> None:
+    path = tmp_path / 'config.json'
+    save_settings(Settings(currencies=('USD',)), path)
+    assert load_settings(path).currencies == ('USD',)
+
+
+def test_apply_changes_replaces_currencies() -> None:
+    result = apply_changes(Settings(), {'currencies': ['jpy']})
+    assert result.currencies == ('JPY',)
