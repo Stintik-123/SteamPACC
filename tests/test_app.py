@@ -25,8 +25,8 @@ def _price(appid: int = 440, country: str = 'ru') -> Price:
         appid=appid,
         country=country,
         currency='RUB',
-        final=129,
-        initial=199,
+        final=12900,
+        initial=19900,
         discount_percent=35,
         title='Test Game',
         is_free=False,
@@ -117,7 +117,7 @@ def test_cached_price_returns_fresh_entry() -> None:
     cache = {'ru': {'appid': 440, 'time': int(time.time()), 'price': price_to_dict(price)}}
     result = cached_price(cache, 440, 'ru')
     assert result is not None
-    assert result.final == 129
+    assert result.final == 12900
     assert result.discount_percent == 35
 
 

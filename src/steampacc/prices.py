@@ -4,6 +4,12 @@
 и разбирает ответ в структуру Price. Запрос сети и разбор ответа
 разделены, поэтому разбор проверяется без подключения к интернету.
 
+Важно: магазин Steam отдаёт цены в минорных единицах (копейки, центы).
+Игра за 9,99 доллара приходит со значением final = 999, а игра за
+385 рублей - со значением final = 38500. Модуль хранит числа в том
+виде, в каком их прислал Steam, и переводит их в основные единицы
+только при показе пользователю.
+
 Используется только стандартная библиотека Python.
 '''
 
@@ -17,6 +23,13 @@ from typing import Any
 
 #: Базовый адрес публичного API магазина Steam.
 API_URL = 'https://store.steampowered.com/api/appdetails'
+
+#: Во сколько минорных единиц (копеек, центов) делится одна основная
+#: единица валюты. Steam отдаёт цены именно в минорных единицах.
+MINOR_UNITS = 100
+
+#: Неразрывный пробел: разряды числа не разрываются при переносе строки.
+NBSP = chr(160)
 
 #: Страны, для которых показываются цены: код -> название на русском.
 SUPPORTED_COUNTRIES: dict[str, str] = {
@@ -57,6 +70,9 @@ CURRENCY_SYMBOLS: dict[str, str] = {
     'KZT': chr(8376),
     'PLN': 'z' + chr(322),
     'BRL': 'R' + chr(36),
+    'AUD': 'A' + chr(36),
+    'CAD': 'C' + chr(36),
+    'SEK': 'kr',
 }
 
 #: Код валюты -> код страны Steam, по которому запрашивается цена.
@@ -73,6 +89,9 @@ CURRENCY_COUNTRIES: dict[str, str] = {
     'KZT': 'kz',
     'PLN': 'pl',
     'BRL': 'br',
+    'AUD': 'au',
+    'CAD': 'ca',
+    'SEK': 'se',
 }
 
 
@@ -82,7 +101,11 @@ class PriceError(ValueError):
 
 @dataclass(frozen=True)
 class Price:
-    '''Цена игры в одном регионе.'''
+    '''Цена игры в одном регионе.
+
+    Значения final и initial хранятся в минорных единицах, как их
+    отдаёт магазин Steam. Для показа используйте format_price.
+    '''
 
     appid: int
     country: str
@@ -204,14 +227,46 @@ def fetch_price(appid: int, country: str, timeout: float = 10.0) -> Price:
     return parse_price(appid, country, payload)
 
 
+def format_thousands(number: int) -> str:
+    '''Разделяет разряды числа неразрывным пробелом: 5399 -> "5 399".'''
+    text = str(abs(int(number)))
+    parts: list[str] = []
+    while len(text) > 3:
+        parts.insert(0, text[-3:])
+        text = text[:-3]
+    parts.insert(0, text)
+    return NBSP.join(parts)
+
+
+def format_amount(value: int | None) -> str:
+    '''Переводит сумму из минорных единиц в текст: 999 -> "9,99".
+
+    Steam отдаёт цены в сотых долях, поэтому перед показом число
+    делится на сто. Нули после запятой не показываются: 38500
+    превращается в "385", а 975 - в "9,75".
+    '''
+    if value is None:
+        return ''
+    whole, fraction = divmod(abs(int(value)), MINOR_UNITS)
+    sign = '-' if int(value) < 0 else ''
+    text = format_thousands(whole)
+    if fraction:
+        text = text + ',' + str(fraction).zfill(2)
+    return sign + text
+
+
 def format_price(price: Price) -> str:
-    '''Готовит цену к показу пользователю.'''
+    '''Готовит цену к показу пользователю.
+
+    Значения Steam приходят в минорных единицах, поэтому перед показом
+    они переводятся в основные: 999 показывается как "9,99".
+    '''
     if price.is_free:
         return 'Бесплатно'
     if price.final is None:
         return 'Цена неизвестна'
     symbol = CURRENCY_SYMBOLS.get(price.currency, price.currency)
-    text = str(price.final) + ' ' + symbol
+    text = format_amount(price.final) + ' ' + symbol
     if price.initial is not None and price.discount_percent > 0 and price.initial > price.final:
-        text = text + ' (было ' + str(price.initial) + ' ' + symbol + ')'
+        text = text + ' (было ' + format_amount(price.initial) + ' ' + symbol + ')'
     return text

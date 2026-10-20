@@ -106,6 +106,78 @@ jobs:
           echo "Используется ISCC: $ISCC"
           "$ISCC" installer/SteamPACC.iss
 
+      - name: "Проверка установщика: установка, автозапуск, удаление"
+        shell: bash
+        run: |
+          set -e
+          setup=$(ls dist/SteamPACC-Setup-*.exe | head -1)
+          echo "=== Устанавливаем: $setup ==="
+          "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          echo "=== Установщик отработал без ошибок ==="
+
+          appid="{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}_is1"
+          location=""
+          for root in "HKCU" "HKLM"; do
+            value=$(reg query "$root\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appid" //v InstallLocation 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+            if [ -n "$value" ]; then
+              location="$value"
+              break
+            fi
+          done
+          echo "Каталог установки: $location"
+          if [ -z "$location" ]; then
+            echo "ОШИБКА: установщик не записал каталог установки в реестр"
+            exit 1
+          fi
+
+          exe="$location\SteamPACC.exe"
+          if [ ! -f "$exe" ]; then
+            echo "ОШИБКА: нет файла программы: $exe"
+            exit 1
+          fi
+          echo "OK: программа установлена: $exe"
+
+          runvalue=$(reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          echo "Автозапуск: $runvalue"
+          if [ -z "$runvalue" ]; then
+            echo "ОШИБКА: ключ автозапуска SteamPACC не создан"
+            exit 1
+          fi
+          case "$runvalue" in
+            *--autostart*) echo "OK: в автозапуске есть --autostart" ;;
+            *) echo "ОШИБКА: в автозапуске нет --autostart"; exit 1 ;;
+          esac
+          case "$runvalue" in
+            *"$exe"*) echo "OK: в автозапуске полный путь к программе" ;;
+            *) echo "ОШИБКА: в автозапуске нет полного пути к программе"; exit 1 ;;
+          esac
+
+          rm -f "$APPDATA/SteamPACC/samoproverka.txt" 2>/dev/null || true
+          "$exe" --selftest
+          sleep 2
+          if [ -f "$APPDATA/SteamPACC/samoproverka.txt" ]; then
+            echo "OK: установленная программа отвечает на --selftest"
+          else
+            echo "ОШИБКА: установленная программа не отвечает"
+            exit 1
+          fi
+
+          echo "=== Удаляем программу ==="
+          taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+          uninstaller=$(ls "$location"/unins*.exe 2>/dev/null | head -1)
+          if [ -z "$uninstaller" ]; then
+            echo "ОШИБКА: деинсталлятор не найден"
+            exit 1
+          fi
+          "$uninstaller" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART || echo "Деинсталлятор вернул код: $?"
+          sleep 3
+          left=$(reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          if [ -n "$left" ]; then
+            echo "ОШИБКА: после удаления ключ автозапуска остался: $left"
+            exit 1
+          fi
+          echo "OK: после удаления ключ автозапуска исчез"
+
       - name: Сохранение установщика как артефакт
         uses: actions/upload-artifact@v4
         with:
