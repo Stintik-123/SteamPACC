@@ -78,3 +78,73 @@ def test_smoke_test_reports_missing_qt(monkeypatch: pytest.MonkeyPatch) -> None:
     '''Без PySide6 проверка графики честно возвращает ошибку, а не молчит.'''
     monkeypatch.setattr(app, 'QT_AVAILABLE', False)
     assert app.smoke_test() == 1
+
+
+def test_autostart_flags_are_declared() -> None:
+    '''Ключи управления автозапуском объявлены в модуле.'''
+    assert entry.ENABLE_AUTOSTART_FLAG == '--enable-autostart'
+    assert entry.DISABLE_AUTOSTART_FLAG == '--disable-autostart'
+
+
+def test_autostart_flags_in_help() -> None:
+    '''Справка по командной строке содержит ключи автозапуска.'''
+    assert entry.ENABLE_AUTOSTART_FLAG in entry.HELP_TEXT
+    assert entry.DISABLE_AUTOSTART_FLAG in entry.HELP_TEXT
+
+
+def test_autostart_routes_to_setter(monkeypatch: pytest.MonkeyPatch) -> None:
+    '''Ключи автозапуска доходят до функции изменения состояния.'''
+    calls: list[bool] = []
+
+    def fake_set(enable: bool) -> int:
+        '''Запоминает, с каким флагом вызвали функцию.'''
+        calls.append(enable)
+        return 0
+
+    monkeypatch.setattr(entry, '_set_autostart', fake_set)
+    assert entry.main(['--enable-autostart']) == 0
+    assert entry.main(['--disable-autostart']) == 0
+    assert calls == [True, False]
+
+
+def test_set_autostart_outside_windows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    '''Вне Windows автозапуск честно сообщает о недоступности.'''
+    from steampacc import win_api
+
+    if win_api.is_available():
+        pytest.skip('проверка для систем без Windows')
+    code = entry._set_autostart(True)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert 'Windows' in captured.out
+
+
+def test_set_autostart_inside_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    '''Под Windows функция просит win_api записать и стереть запись реестра.'''
+    from steampacc import win_api
+
+    calls: list[tuple[str, bool]] = []
+
+    def fake_register(executable: str, enable: bool = True) -> bool:
+        '''Запоминает вызовы записи автозапуска.'''
+        calls.append((executable, enable))
+        return True
+
+    monkeypatch.setattr(win_api, 'is_available', lambda: True)
+    monkeypatch.setattr(win_api, 'register_autostart', fake_register)
+    assert entry._set_autostart(True) == 0
+    assert entry._set_autostart(False) == 0
+    assert len(calls) == 2
+    assert calls[0][1] is True
+    assert calls[1][1] is False
+
+
+def test_set_autostart_reports_registry_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    '''Если реестр не принял запись, программа возвращает ошибку.'''
+    from steampacc import win_api
+
+    monkeypatch.setattr(win_api, 'is_available', lambda: True)
+    monkeypatch.setattr(win_api, 'register_autostart', lambda exe, enable=True: False)
+    assert entry._set_autostart(True) == 1

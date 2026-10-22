@@ -6,7 +6,7 @@
 ;     ISCC /DMyAppVersion=0.1.5 installer\SteamPACC.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.6"
+  #define MyAppVersion "0.1.7"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
