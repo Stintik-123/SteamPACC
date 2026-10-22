@@ -193,6 +193,9 @@ jobs:
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
           taskkill //IM SteamPACC-Console.exe //F 2>/dev/null || true
           sleep 2
+          # Стираем журнал программы: после установки в нём должна быть
+          # только запись о запуске, который сделал установщик.
+          rm -f "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null || true
           setup=$(ls dist/SteamPACC-Setup-*.exe | head -1 || true)
           echo "=== Устанавливаем: $setup ==="
           with_timeout 180 env MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG /MERGETASKS=autostart,desktopicon || {
@@ -250,12 +253,46 @@ jobs:
             *) echo "ОШИБКА: в автозапуске нет полного пути к программе"; exit 1 ;;
           esac
 
-          # Программа запускается установщиком, но процесс появляется не сразу.
-          sleep 5
-          if tasklist | grep -qi SteamPACC.exe; then
-            echo "OK: процесс SteamPACC.exe запущен сразу после установки"
+          # Программа запускается установщиком, но процесс появляется не сразу:
+          # однофайловая сборка сначала распаковывается во временный каталог.
+          # Ждём до 60 секунд.
+          started=0
+          for attempt in $(seq 1 30); do
+            if tasklist | grep -qi SteamPACC.exe; then
+              started=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$started" = "1" ]; then
+            echo "OK: процесс SteamPACC.exe запущен после установки"
           else
-            echo "ВНИМАНИЕ: процесс SteamPACC.exe не найден сразу после установки"
+            echo "ОШИБКА: после установки процесс SteamPACC.exe не запустился"
+            echo "--- журнал программы ---"
+            cat "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null || echo "(журнала нет)"
+            echo "--- журнал установщика (Inno Setup) ---"
+            find dist . "$TEMP" -maxdepth 4 -type f -name "Setup Log*.txt" -mmin -40 -print 2>/dev/null | while IFS= read -r f; do
+              echo "=== $f ==="
+              tail -40 "$f"
+            done
+            exit 1
+          fi
+          # При старте программа пишет в журнал строку "Старт SteamPACC".
+          # Ждём её: она может появиться чуть позже появления процесса.
+          logged=0
+          for attempt in $(seq 1 15); do
+            if grep -q "Старт SteamPACC" "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null; then
+              logged=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$logged" = "1" ]; then
+            echo "OK: в журнале программы есть запись о старте"
+          else
+            echo "ОШИБКА: в журнале программы нет записи о старте"
+            cat "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null || echo "(журнала нет)"
+            exit 1
           fi
 
           rm -f "$APPDATA/SteamPACC/samoproverka.txt" 2>/dev/null || true
@@ -298,6 +335,9 @@ jobs:
           # Ключи установщика передаём через env MSYS_NO_PATHCONV=1, иначе
           # Git Bash превратит /VERYSILENT в путь и установщик откроет окно.
           setup=$(ls dist/SteamPACC-Setup-*.exe | head -1 || true)
+          # Стираем журнал программы, чтобы отличить запуск от установщика
+          # от записей предыдущих шагов.
+          rm -f "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null || true
           echo "=== Устанавливаем для всех пользователей: $setup ==="
           env MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG /ALLUSERS /MERGETASKS=autostart > "$RUNNER_TEMP/setup-admin.log" 2>&1 < /dev/null &
           pid=$!
@@ -355,6 +395,30 @@ jobs:
             exit 1
           fi
           echo "OK: в HKCU лишнего ключа нет"
+
+          # Проверяем, что в режиме "для всех пользователей" установщик
+          # тоже запускает программу.
+          started=0
+          for attempt in $(seq 1 30); do
+            if tasklist | grep -qi SteamPACC.exe; then
+              started=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$started" = "1" ]; then
+            echo "OK: процесс SteamPACC.exe запущен после установки для всех пользователей"
+          else
+            echo "ОШИБКА: в режиме для всех пользователей программа не запустилась"
+            echo "--- журнал программы ---"
+            cat "$APPDATA/SteamPACC/steampacc.log" 2>/dev/null || echo "(журнала нет)"
+            echo "--- журнал установщика (Inno Setup) ---"
+            find dist . "$TEMP" -maxdepth 4 -type f -name "Setup Log*.txt" -mmin -40 -print 2>/dev/null | while IFS= read -r f; do
+              echo "=== $f ==="
+              tail -40 "$f"
+            done
+            exit 1
+          fi
 
           echo "=== Удаляем программу ==="
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
