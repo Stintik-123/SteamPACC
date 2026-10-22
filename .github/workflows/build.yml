@@ -215,6 +215,9 @@ jobs:
               break
             fi
           done
+          # Inno пишет каталог с завершающим обратным слэшем — убираем его,
+          # иначе в проверке полного пути получится двойной слэш.
+          location="${location%\\}"
           echo "Каталог установки: $location"
           if [ -z "$location" ]; then
             echo "ОШИБКА: установщик не записал каталог установки в реестр"
@@ -314,6 +317,9 @@ jobs:
 
           appid="{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}_is1"
           location=$(reg query "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$appid" //v InstallLocation 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          # Inno пишет каталог с завершающим обратным слэшем — убираем его,
+          # иначе в проверке полного пути получится двойной слэш.
+          location="${location%\\}"
           echo "Каталог установки: $location"
           if [ -z "$location" ]; then
             echo "ОШИБКА: установщик не записал каталог установки в реестр"
