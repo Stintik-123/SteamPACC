@@ -8,13 +8,28 @@
 импортируется на любой системе: на остальных платформах функции
 возвращают безопасное значение или поднимают WinApiError с понятным
 русским текстом.
+
+Добавление игры в автозагрузку Windows (командная строка -> реестр):
+``register_autostart`` пишет путь к программе в ветку
+``Software\\Microsoft\\Windows\\CurrentVersion\\Run`` через ``reg.exe``,
+без прав администратора и без сторонних библиотек.
 '''
 
 from __future__ import annotations
 
 import ctypes
+import subprocess
 import sys
 from typing import Any
+
+#: Ветка реестра Windows с автозапуском для текущего пользователя.
+AUTOSTART_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+
+#: Имя значения автозапуска SteamPACC в реестре.
+AUTOSTART_VALUE_NAME = 'SteamPACC'
+
+#: Флаг автозапуска: программа понимает, что стартовала вместе с Windows.
+AUTOSTART_ARGUMENTS = '--autostart'
 
 #: Контекст DPI для Windows 10 1703 и новее: окно масштабируется под монитор.
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
@@ -219,3 +234,84 @@ def close_handle(handle: int) -> bool:
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.CloseHandle.restype = ctypes.c_bool
     return bool(kernel32.CloseHandle(ctypes.c_void_p(handle)))
+
+
+def build_autostart_command(executable: str, arguments: str = AUTOSTART_ARGUMENTS) -> str:
+    '''Собирает строку запуска для автозагрузки Windows.
+
+    Путь к программе берётся в двойные кавычки: в нём бывают пробелы
+    (``C:\\Program Files\\...``), и без кавычек Windows запустит не то.
+    '''
+    if not isinstance(executable, str) or not executable.strip():
+        raise WinApiError('Путь к программе не может быть пустым')
+    path = executable.strip()
+    command = '"' + path + '"'
+    rest = (arguments or '').strip()
+    if rest:
+        command += ' ' + rest
+    return command
+
+
+def register_autostart(executable: str, enable: bool = True) -> bool:
+    '''Включает или выключает запуск SteamPACC вместе с Windows.
+
+    Работает через командную строку: вызывается штатная утилита ``reg.exe``,
+    которая пишет значение в ветку автозапуска текущего пользователя.
+    Права администратора не нужны. Вне Windows функция честно сообщает,
+    что автозапуск недоступен, и возвращает False.
+    '''
+    if not is_available():
+        return False
+    if enable:
+        command = [
+            'reg', 'add',
+            'HKCU\\' + AUTOSTART_KEY,
+            '/v', AUTOSTART_VALUE_NAME,
+            '/t', 'REG_SZ',
+            '/d', build_autostart_command(executable),
+            '/f',
+        ]
+    else:
+        command = [
+            'reg', 'delete',
+            'HKCU\\' + AUTOSTART_KEY,
+            '/v', AUTOSTART_VALUE_NAME,
+            '/f',
+        ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def autostart_command() -> str | None:
+    '''Возвращает текущую строку автозапуска SteamPACC или None.
+
+    Использует ту же командную строку Windows (``reg query``), поэтому
+    программа может проверить своё состояние без сторонних библиотек.
+    '''
+    if not is_available():
+        return None
+    command = [
+        'reg', 'query',
+        'HKCU\\' + AUTOSTART_KEY,
+        '/v', AUTOSTART_VALUE_NAME,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or '').splitlines():
+        if AUTOSTART_VALUE_NAME in line and 'REG_SZ' in line:
+            parts = line.rsplit('REG_SZ', 1)
+            if len(parts) == 2:
+                return parts[1].strip()
+    return None

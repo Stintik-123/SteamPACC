@@ -30,6 +30,7 @@ REPORT_FIELDS: tuple[tuple[str, str], ...] = (
     ('data_dir', 'Каталог данных'),
     ('data_dir_writable', 'Каталог данных доступен для записи'),
     ('steam_root', 'Каталог Steam'),
+    ('autostart', 'Автозапуск Windows'),
     ('ci', 'Переменная CI'),
     ('args', 'Аргументы запуска'),
     ('time', 'Время проверки'),
@@ -55,6 +56,21 @@ def _steam_root() -> str:
     except Exception:
         pass
     return 'не найден'
+
+
+def _autostart_state() -> str:
+    '''Описывает состояние автозапуска Windows в отчёте самопроверки.'''
+    try:
+        from .win_api import autostart_command, is_available
+
+        if not is_available():
+            return 'недоступно (не Windows)'
+        command = autostart_command()
+        if command is None:
+            return 'выключен'
+        return 'включён: ' + command
+    except Exception:
+        return 'не удалось проверить'
 
 
 def _data_dir() -> Path:
@@ -93,6 +109,7 @@ def collect_info() -> dict[str, Any]:
         'data_dir': str(data),
         'data_dir_writable': _can_write(data),
         'steam_root': _steam_root(),
+        'autostart': _autostart_state(),
         'ci': os.environ.get('CI', '-'),
         'args': ' '.join(sys.argv),
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),

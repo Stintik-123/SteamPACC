@@ -41,6 +41,7 @@ from .prices import (
 )
 from .steam_paths import find_steam_root, steam_paths
 from .library import iter_library_games, read_library_folders
+from .config import apply_changes
 
 try:
     from PySide6.QtCore import QSize, QTimer, Qt, Signal, QObject
@@ -431,8 +432,15 @@ if QT_AVAILABLE:
             for text, codes in currency_presets:
                 self.currency_combo.addItem(text, codes)
             
-            # Find current preset
-            current = list(settings.currencies)
+            # Текущий набор валют показываем даже если он не совпадает
+            # ни с одним готовым presets: добавляем его отдельным пунктом.
+            current = [str(code).upper() for code in settings.currencies if code]
+            preset_codes = {tuple(codes) for _, codes in currency_presets}
+            if current and tuple(current) not in preset_codes:
+                self.currency_combo.addItem(
+                    "Текущие (" + ", ".join(current) + ")",
+                    tuple(current),
+                )
             for i, (text, codes) in enumerate(currency_presets):
                 if list(codes) == current:
                     self.currency_combo.setCurrentIndex(i)
@@ -585,18 +593,14 @@ if QT_AVAILABLE:
             dialog = SettingsDialog(self._settings)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 changes = dialog.get_settings()
-                self._settings = Settings(
-                    language=self._settings.language,
-                    country=self._settings.country,
-                    overlay_opacity=changes['overlay_opacity'],
-                    overlay_scale=changes['overlay_scale'],
-                    show_fps=self._settings.show_fps,
-                    update_interval=self._settings.update_interval,
-                    launch_with_steam=changes['launch_with_steam'],
-                    currencies=tuple(changes['currencies']),
-                )
+                # apply_changes проверяет и ограничивает значения,
+                # поэтому в файл настроек не попадёт ничего недопустимого.
+                self._settings = apply_changes(self._settings, changes)
                 save_settings(self._settings)
                 self._window.setWindowOpacity(float(self._settings.overlay_opacity))
+                # Галочка «Запускать с Windows» теперь работает сразу:
+                # программа сама обновляет ветку автозапуска в реестре.
+                sync_autostart(self._settings)
                 self.settings_changed.emit()
         
         def _load_games(self) -> None:
@@ -805,6 +809,47 @@ def is_autostart_launch(arguments: list[str] | None = None) -> bool:
     return any(item.strip().lower() == '--autostart' for item in items)
 
 
+def current_executable_path() -> str:
+    '''Путь к исполняемому файлу программы.
+
+    В собранном виде (PyInstaller) это SteamPACC.exe; при запуске из
+    исходников возвращается путь к интерпретатору Python — автозапуск
+    в этом случае лучше включать через командную строку (pip install -e .).
+    '''
+    return str(Path(sys.executable))
+
+
+def sync_autostart(settings: Settings) -> bool | None:
+    '''Приводит автозапуск Windows в соответствие с настройками.
+
+    Возвращает True, если состояние удалось изменить или проверить,
+    False при ошибке и None вне Windows (там автозапуск недоступен).
+    Программа сама пишет путь к себе в ветку Run реестра через командную
+    строку (reg.exe), поэтому галочка «Запускать с Windows» работает без
+    переустановки.
+    '''
+    if not win_api.is_available():
+        return None
+    try:
+        wanted = bool(settings.launch_with_steam)
+        actual = win_api.autostart_command() is not None
+        if wanted == actual:
+            return True
+        executable = current_executable_path()
+        result = win_api.register_autostart(executable, enable=wanted)
+        log_message(
+            'Автозапуск: ' + ('включён' if wanted else 'выключен') +
+            (' успешно' if result else ' — не удалось изменить')
+        )
+        return bool(result)
+    except win_api.WinApiError:
+        log_exception('Автозапуск: ошибка обращения к WinAPI')
+        return False
+    except Exception:
+        log_exception('Автозапуск: неизвестная ошибка')
+        return False
+
+
 # =============================================================================
 # Test and Main Functions
 # =============================================================================
@@ -836,7 +881,8 @@ def smoke_test() -> int:
 
 def run() -> int:
     """Run the main application."""
-    log_message('Запуск SteamPACC, версия ' + app_version())
+    # app_version — это строка с версией пакета, а не функция.
+    log_message('Запуск SteamPACC, версия ' + str(app_version))
     
     if not QT_AVAILABLE:
         log_message('PySide6 недоступен: графическая часть не будет работать')
@@ -856,7 +902,11 @@ def run() -> int:
         
         # Set DPI awareness
         win_api.set_dpi_awareness()
-        
+
+        # Приводим автозапуск Windows в соответствие с настройками:
+        # галочка «Запускать с Windows» работает без переустановки.
+        sync_autostart(load_settings())
+
         # Create application
         application = QApplication(sys.argv)
         application.setQuitOnLastWindowClosed(False)

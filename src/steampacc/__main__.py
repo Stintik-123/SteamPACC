@@ -5,11 +5,18 @@
 
 Модуль настраивает консоль и обрабатывает аргументы командной строки.
 
+Программу можно запустить двумя способами из командной строки:
+
+* после установки пакета (``pip install steampacc``) — командой ``steampacc``;
+* из исходников — командой ``python -m steampacc``.
+
 Ключи запуска:
 
 * ``--version`` - напечатать версию и выйти;
+* ``--help`` - напечатать список ключей и выйти;
 * ``--selftest`` - создать отчёт о системе и выйти;
 * ``--smoke`` - проверить, что графическая часть работает;
+* ``--prices APPID`` - показать цены игры прямо в консоли (без графики);
 * ``--autostart`` - флаг, что запуск из автозагрузки Windows.
 """
 
@@ -21,14 +28,46 @@ from typing import Sequence
 #: Ключ запуска: напечатать версию.
 VERSION_FLAG = '--version'
 
+#: Ключ запуска: напечатать справку по командной строке.
+HELP_FLAG = '--help'
+
+#: Ключ запуска: напечатать справку по командной строке (короткий вид).
+HELP_FLAG_SHORT = '-h'
+
 #: Ключ запуска: создать отчёт о системе.
 SELFTEST_FLAG = '--selftest'
 
 #: Ключ запуска: проверить графическую часть.
 SMOKE_FLAG = '--smoke'
 
+#: Ключ запуска: показать цены игры в консоли.
+PRICES_FLAG = '--prices'
+
+#: Ключ запуска: включить автозапуск SteamPACC вместе с Windows.
+ENABLE_AUTOSTART_FLAG = '--enable-autostart'
+
+#: Ключ запуска: выключить автозапуск SteamPACC вместе с Windows.
+DISABLE_AUTOSTART_FLAG = '--disable-autostart'
+
 #: Ключ запуска: автозапуск из Windows.
 AUTOSTART_FLAG = '--autostart'
+
+#: Текст справки для запуска из командной строки.
+HELP_TEXT = '\n'.join((
+    'SteamPACC - цены игр Steam в разных валютах поверх клиента Steam.',
+    '',
+    'Запуск из командной строки:',
+    '  steampacc                 - обычный запуск: программа живёт в трее',
+    '  python -m steampacc       - то же самое из исходников',
+    '',
+    'Ключи:',
+    '  --version                 напечатать версию',
+    '  --help                    напечатать эту справку',
+    '  --selftest                проверить систему и сохранить отчёт',
+    '  --smoke                   проверить, что графическая часть работает',
+    '  --prices APPID            показать цены игры APPID в консоли',
+    '  --autostart               запуск из автозагрузки Windows',
+))
 
 
 def _prepare_console() -> None:
@@ -80,6 +119,57 @@ def _run_version() -> int:
     return 0
 
 
+def _run_help() -> int:
+    """Печатает справку по ключам командной строки и выходит."""
+    from steampacc.diagnostics import safe_print
+    safe_print(HELP_TEXT)
+    return 0
+
+
+def _run_prices(args: Sequence[str]) -> int:
+    """Показывает цены игры прямо в консоли: без графики и трея.
+
+    Ключ ``--prices`` должен следовать за идентификатором игры (appid).
+    Валюты берутся из настроек пользователя, как в оверлее.
+    """
+    from steampacc.diagnostics import safe_print
+    from steampacc.config import load_settings
+    from steampacc.prices import CURRENCY_COUNTRIES, PriceError, fetch_price, format_price
+
+    items = list(args)
+    index = items.index(PRICES_FLAG)
+    appid: int | None = None
+    if index + 1 < len(items):
+        try:
+            appid = int(items[index + 1])
+        except ValueError:
+            appid = None
+    if appid is None or appid <= 0:
+        safe_print('Нужен идентификатор игры: steampacc --prices 730')
+        return 2
+
+    from steampacc.app import watch_currencies
+
+    settings = load_settings()
+    codes = watch_currencies(settings)
+    safe_print('Цены Steam для игры ' + str(appid) + ':')
+    failures = 0
+    for code in codes:
+        country = CURRENCY_COUNTRIES.get(code, code.lower())
+        try:
+            price = fetch_price(appid, country)
+        except PriceError as error:
+            failures += 1
+            safe_print(code + ': ошибка - ' + str(error))
+            continue
+        title = (price.title or '').strip()
+        line = code + ': ' + format_price(price)
+        if title:
+            line += ' (' + title + ')'
+        safe_print(line)
+    return 0 if failures < len(codes) else 1
+
+
 def _run_selftest() -> int:
     """Создаёт отчёт о системе и выходит."""
     from steampacc.diagnostics import safe_print
@@ -107,10 +197,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if VERSION_FLAG in args:
             return _run_version()
+        if HELP_FLAG in args or HELP_FLAG_SHORT in args:
+            return _run_help()
         if SELFTEST_FLAG in args:
             return _run_selftest()
         if SMOKE_FLAG in args:
             return _run_smoke()
+        if PRICES_FLAG in args:
+            return _run_prices(args)
         
         # Normal launch
         from steampacc.app import run

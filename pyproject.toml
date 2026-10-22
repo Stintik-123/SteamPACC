@@ -1,0 +1,55 @@
+# Пакет SteamPACC: установка и сборка из командной строки.
+#
+# Быстрый старт из исходников (командная строка, Windows или Linux):
+#   py -3.11 -m venv .venv
+#   .venv\Scripts\activate            (Windows)
+#   pip install -e ".[dev]"           (обычная установка пакета)
+#   python -m steampacc --version     (запуск программы)
+#
+# Сборка исполняемого файла:
+#   pip install -e ".[build]"
+#   pyinstaller --noconfirm --clean installer/SteamPACC.spec
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steampacc"
+dynamic = ["version"]
+description = "SteamPACC: цены игр Steam в разных валютах поверх клиента Steam"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Stintik-123" }]
+keywords = ["steam", "цены", "валюты", "оверлей"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "PySide6>=6.6,<7",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+# Зависимости для сборки исполняемого файла: pip install -e ".[build]"
+build = ["pyinstaller>=6.6"]
+# Зависимости для разработки и тестов: pip install -e ".[dev]"
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+# Программа доступна в командной строке сразу после установки пакета.
+steampacc = "steampacc.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/Stintik-123/SteamPACC"
+Issues = "https://github.com/Stintik-123/SteamPACC/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+# Версия берётся из src/steampacc/__init__.py, чтобы нигде не расходилась.
+version = { attr = "steampacc.__version__" }
