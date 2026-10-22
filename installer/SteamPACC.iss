@@ -1,5 +1,9 @@
 ; Скрипт установщика SteamPACC (Inno Setup 6).
 ; Все тексты мастера — на русском языке.
+;
+; Версию установщика можно задать при сборке, чтобы она совпадала
+; с версией программы из src/steampacc/__init__.py:
+;     ISCC /DMyAppVersion=0.1.5 installer\SteamPACC.iss
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.6"
@@ -18,7 +22,10 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={localappdata}\Programs\{#MyAppName}
+; {autopf} — это "Program Files" для всех пользователей, а если установка
+; идёт без прав администратора — папка программ текущего пользователя
+; (%LOCALAPPDATA%\Programs). Один каталог на оба случая.
+DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
@@ -33,7 +40,10 @@ LicenseFile=..\LICENSE
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
+; По умолчанию ставим без прав администратора, но пользователь может
+; выбрать установку "для всех пользователей" (в Program Files).
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 VersionInfoVersion={#MyAppVersion}
 
 [Languages]
@@ -59,10 +69,13 @@ Name: "{group}\Руководство"; Filename: "{app}\Руководство.
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart
+; Автозапуск для текущего пользователя: обычная установка.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart; Check: not IsAdminInstallMode
+; При установке для всех пользователей — общая ветка реестра.
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart; Check: IsAdminInstallMode
 
 [Run]
-Filename: "{cmd}"; Parameters: "/c start """"{app}\{#MyAppExeName}"""; Description: "Запустить {#MyAppName}"; Flags: nowait runhidden
+Filename: "{cmd}"; Parameters: "/c start ""SteamPACC"" ""{app}\{#MyAppExeName}"""; Description: "Запустить {#MyAppName}"; Flags: nowait runhidden
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
@@ -73,6 +86,7 @@ var
   ResultCode: Integer;
 begin
   Result := True;
+  // Закрываем запущенную программу, иначе файлы нельзя будет заменить.
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExeName}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Sleep(2000);
 end;
