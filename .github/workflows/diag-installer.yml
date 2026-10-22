@@ -55,9 +55,18 @@ jobs:
         shell: bash
         run: |
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
-          setup=$(ls dist/SteamPACC-Setup-NoRun-*.exe | head -1)
+          # Имя файла без номера версии: SteamPACC-Setup-NoRun.exe
+          setup=$(ls dist/SteamPACC-Setup-NoRun*.exe | head -1)
+          if [ -z "$setup" ]; then
+            echo "ОШИБКА: вариант установщика без [Run] не найден"
+            ls -la dist
+            exit 1
+          fi
           echo "=== Устанавливаем: $setup ==="
-          "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > norun.log 2>&1 &
+          # MSYS_NO_PATHCONV=1: без него Git Bash превращает /VERYSILENT в
+          # путь "C:/Program Files/Git/VERYSILENT", и установщик не узнаёт
+          # параметров, а показывает окно мастера.
+          env MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > norun.log 2>&1 < /dev/null &
           pid=$!
           sleep 30
           if kill -0 "$pid" 2>/dev/null; then
@@ -87,8 +96,13 @@ jobs:
           taskkill //IM charmap.exe //F 2>/dev/null || true
           taskkill //IM mspaint.exe //F 2>/dev/null || true
           setup=$(ls dist/SteamPACC-Setup-0.*.exe | head -1)
+          if [ -z "$setup" ]; then
+            echo "ОШИБКА: обычный вариант установщика не найден"
+            ls -la dist
+            exit 1
+          fi
           echo "=== Устанавливаем: $setup ==="
-          "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > run.log 2>&1 &
+          env MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > run.log 2>&1 < /dev/null &
           pid=$!
           sleep 30
           if kill -0 "$pid" 2>/dev/null; then

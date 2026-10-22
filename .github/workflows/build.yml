@@ -34,6 +34,8 @@ jobs:
           set +e
           python -m pytest -q
           code=$?
+          # Код 5 — pytest не нашёл ни одного теста. Это не поломка сборки:
+          # сообщаем об этом и идём дальше. Любой другой код — настоящая ошибка.
           if [ "$code" -eq 5 ]; then
             echo "Тестов пока нет — шаг пропущен."
             exit 0
@@ -41,9 +43,16 @@ jobs:
           exit $code
 
       - name: Сборка исполняемых файлов
+        shell: bash
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name SteamPACC --paths src src/steampacc/__main__.py
-          pyinstaller --noconfirm --clean --onefile --console --name SteamPACC-Console --paths src src/steampacc/__main__.py
+          set -e
+          # Основной вариант: без окна консоли, программа живёт в трее.
+          pyinstaller --noconfirm --clean --distpath dist --workpath build/windowed installer/SteamPACC.spec
+          # Консольный вариант: для диагностики и запуска из командной строки.
+          STEAMPACC_CONSOLE=1 pyinstaller --noconfirm --clean --distpath dist --workpath build/console installer/SteamPACC.spec
+          ls -la dist
+          test -f dist/SteamPACC.exe || { echo "ОШИБКА: нет dist/SteamPACC.exe"; exit 1; }
+          test -f dist/SteamPACC-Console.exe || { echo "ОШИБКА: нет dist/SteamPACC-Console.exe"; exit 1; }
 
       - name: Проверка собранной программы без графики
         shell: bash
@@ -92,6 +101,14 @@ jobs:
       - name: Сборка установщика
         shell: bash
         run: |
+          set -e
+          # Версию установщика берём из кода программы, чтобы номера совпадали.
+          VERSION=$(python -c "import ast,pathlib; m=ast.parse(pathlib.Path('src/steampacc/__init__.py').read_text(encoding='utf-8')); print([n.value.value for n in m.body if isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '') == '__version__'][0])")
+          echo "Версия программы: $VERSION"
+          if [ -z "$VERSION" ]; then
+            echo "ОШИБКА: не удалось определить версию программы" >&2
+            exit 1
+          fi
           ISCC=""
           for candidate in "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe"; do
             if [ -f "$candidate" ]; then
@@ -104,13 +121,21 @@ jobs:
             exit 1
           fi
           echo "Используется ISCC: $ISCC"
-          "$ISCC" installer/SteamPACC.iss
+          "$ISCC" "/DMyAppVersion=$VERSION" installer/SteamPACC.iss
+          ls -la dist
 
       - name: Сохранение установщика как артефакт
         uses: actions/upload-artifact@v4
         with:
           name: SteamPACC-Setup
           path: dist/SteamPACC-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Сохранение программы как артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: SteamPACC
+          path: dist/SteamPACC.exe
           if-no-files-found: error
 
       - name: Публикация релиза
@@ -156,6 +181,11 @@ jobs:
             return $code
           }
 
+          # Ключи установщика вида /VERYSILENT нельзя отдавать напрямую:
+          # Git Bash (MSYS) превращает их в путь "C:/Program Files/Git/VERYSILENT",
+          # установщик не узнаёт параметров и показывает окно мастера.
+          # MSYS_NO_PATHCONV=1 отключает именно это преобразование.
+          #
           # Закрываем всё, что могло остаться от предыдущих шагов:
           # работающую программу или графическую проверку.
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
@@ -163,7 +193,7 @@ jobs:
           sleep 2
           setup=$(ls dist/SteamPACC-Setup-*.exe | head -1)
           echo "=== Устанавливаем: $setup ==="
-          with_timeout 180 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG || {
+          with_timeout 180 env MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG /MERGETASKS=autostart,desktopicon || {
             echo "ОШИБКА: установщик не отработал"
             echo "--- поиск журнала установщика (Inno Setup) ---"
             find dist . "$TEMP" -maxdepth 4 -type f \( -name "Setup Log*.txt" -o -name "*.log" \) -mmin -30 -print0 2>/dev/null | while IFS= read -r -d '' f; do
@@ -177,7 +207,7 @@ jobs:
           appid="{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}_is1"
           location=""
           for root in "HKCU" "HKLM"; do
-            value=$(reg query "$root\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$appid" //v InstallLocation 2>/dev/null | tr -d '\\r' | sed -n 's/.*REG_SZ *//p')
+            value=$(reg query "$root\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$appid" //v InstallLocation 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
             if [ -n "$value" ]; then
               location="$value"
               break
@@ -189,14 +219,18 @@ jobs:
             exit 1
           fi
 
-          exe="$location\\SteamPACC.exe"
-          if [ ! -f "$exe" ]; then
-            echo "ОШИБКА: нет файла программы: $exe"
+          # Путь Windows нужен для сравнения со значением в реестре,
+          # путь Git Bash — для проверки файла и запуска программы.
+          win_exe="$location\\SteamPACC.exe"
+          posix_location=$(printf '%s' "$location" | sed -e 's|\\|/|g' -e 's|^\([A-Za-z]\):|/\L\1|')
+          posix_exe="$posix_location/SteamPACC.exe"
+          if [ ! -f "$posix_exe" ]; then
+            echo "ОШИБКА: нет файла программы: $posix_exe"
             exit 1
           fi
-          echo "OK: программа установлена: $exe"
+          echo "OK: программа установлена: $posix_exe"
 
-          runvalue=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\\r' | sed -n 's/.*REG_SZ *//p')
+          runvalue=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
           echo "Автозапуск: $runvalue"
           if [ -z "$runvalue" ]; then
             echo "ОШИБКА: ключ автозапуска SteamPACC не создан"
@@ -207,7 +241,7 @@ jobs:
             *) echo "ОШИБКА: в автозапуске нет --autostart"; exit 1 ;;
           esac
           case "$runvalue" in
-            *"$exe"*) echo "OK: в автозапуске полный путь к программе" ;;
+            *"$win_exe"*) echo "OK: в автозапуске полный путь к программе" ;;
             *) echo "ОШИБКА: в автозапуске нет полного пути к программе"; exit 1 ;;
           esac
 
@@ -218,7 +252,7 @@ jobs:
           fi
 
           rm -f "$APPDATA/SteamPACC/samoproverka.txt" 2>/dev/null || true
-          with_timeout 60 "$exe" --selftest || echo "Приложение ответило кодом: $?"
+          with_timeout 60 "$posix_exe" --selftest || echo "Приложение ответило кодом: $?"
           if [ -f "$APPDATA/SteamPACC/samoproverka.txt" ]; then
             echo "OK: установленная программа отвечает на --selftest"
           else
@@ -235,14 +269,105 @@ jobs:
           echo "=== Удаляем программу ==="
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
           sleep 2
-          uninstaller=$(ls "$location"/unins*.exe 2>/dev/null | head -1)
+          uninstaller=$(ls "$posix_location"/unins*.exe 2>/dev/null | head -1)
           if [ -z "$uninstaller" ]; then
             echo "ОШИБКА: деинсталлятор не найден"
             exit 1
           fi
-          with_timeout 180 "$uninstaller" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART || echo "Деинсталлятор вернул код: $?"
+          with_timeout 180 env MSYS_NO_PATHCONV=1 "$uninstaller" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART || echo "Деинсталлятор вернул код: $?"
           taskkill //IM SteamPACC.exe //F 2>/dev/null || true
-          left=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\\r' | sed -n 's/.*REG_SZ *//p')
+          left=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          if [ -n "$left" ]; then
+            echo "ОШИБКА: после удаления ключ автозапуска остался: $left"
+            exit 1
+          fi
+          echo "OK: после удаления ключ автозапуска исчез"
+
+      - name: "Проверка установщика: режим для всех пользователей (Program Files)"
+        shell: bash
+        run: |
+          # Второй режим установки: "для всех пользователей". Программа
+          # попадает в Program Files, а автозапуск — в общую ветку реестра.
+          # Ключи установщика передаём через env MSYS_NO_PATHCONV=1, иначе
+          # Git Bash превратит /VERYSILENT в путь и установщик откроет окно.
+          setup=$(ls dist/SteamPACC-Setup-*.exe | head -1)
+          echo "=== Устанавливаем для всех пользователей: $setup ==="
+          env MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG /ALLUSERS /MERGETASKS=autostart > "$RUNNER_TEMP/setup-admin.log" 2>&1 < /dev/null &
+          pid=$!
+          waited=0
+          while kill -0 "$pid" 2>/dev/null; do
+            if [ "$waited" -ge 180 ]; then
+              echo "ТАЙМАУТ 180c: установщик для всех пользователей не отработал"
+              taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+              kill -9 "$pid" 2>/dev/null || true
+              cat "$RUNNER_TEMP/setup-admin.log" || true
+              exit 1
+            fi
+            sleep 5
+            waited=$((waited + 5))
+          done
+          wait "$pid" || true
+          cat "$RUNNER_TEMP/setup-admin.log" || true
+          echo "=== Установщик отработал ==="
+
+          appid="{7B1F5C8E-2C4A-4A1E-9E3D-2E9C4B8A7D31}_is1"
+          location=$(reg query "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$appid" //v InstallLocation 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          echo "Каталог установки: $location"
+          if [ -z "$location" ]; then
+            echo "ОШИБКА: установщик не записал каталог установки в реестр"
+            exit 1
+          fi
+          posix_location=$(printf '%s' "$location" | sed -e 's|\\|/|g' -e 's|^\([A-Za-z]\):|/\L\1|')
+          posix_exe="$posix_location/SteamPACC.exe"
+          if [ ! -f "$posix_exe" ]; then
+            echo "ОШИБКА: нет файла программы: $posix_exe"
+            exit 1
+          fi
+          case "$posix_location" in
+            /c/Program\ Files/*) echo "OK: программа стоит в Program Files: $posix_exe" ;;
+            *) echo "ОШИБКА: каталог не в Program Files: $posix_location"; exit 1 ;;
+          esac
+
+          runvalue=$(reg query "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          echo "Автозапуск (HKLM): $runvalue"
+          if [ -z "$runvalue" ]; then
+            echo "ОШИБКА: ключ автозапуска в HKLM не создан"
+            exit 1
+          fi
+          case "$runvalue" in
+            *--autostart*) echo "OK: в автозапуске есть --autostart" ;;
+            *) echo "ОШИБКА: в автозапуске нет --autostart"; exit 1 ;;
+          esac
+
+          user_runvalue=$(reg query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
+          if [ -n "$user_runvalue" ]; then
+            echo "ОШИБКА: в режиме для всех пользователей создан лишний ключ в HKCU: $user_runvalue"
+            exit 1
+          fi
+          echo "OK: в HKCU лишнего ключа нет"
+
+          echo "=== Удаляем программу ==="
+          taskkill //IM SteamPACC.exe //F 2>/dev/null || true
+          sleep 2
+          uninstaller=$(ls "$posix_location"/unins*.exe 2>/dev/null | head -1)
+          if [ -z "$uninstaller" ]; then
+            echo "ОШИБКА: деинсталлятор не найден"
+            exit 1
+          fi
+          env MSYS_NO_PATHCONV=1 "$uninstaller" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART > "$RUNNER_TEMP/uninstall-admin.log" 2>&1 < /dev/null &
+          pid=$!
+          waited=0
+          while kill -0 "$pid" 2>/dev/null; do
+            if [ "$waited" -ge 180 ]; then
+              echo "ТАЙМАУТ 180c: деинсталлятор не отработал"
+              kill -9 "$pid" 2>/dev/null || true
+              exit 1
+            fi
+            sleep 5
+            waited=$((waited + 5))
+          done
+          wait "$pid" || true
+          left=$(reg query "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" //v SteamPACC 2>/dev/null | tr -d '\r' | sed -n 's/.*REG_SZ *//p')
           if [ -n "$left" ]; then
             echo "ОШИБКА: после удаления ключ автозапуска остался: $left"
             exit 1
@@ -273,4 +398,3 @@ jobs:
           name: SteamPACC-Console
           path: dist/SteamPACC-Console.exe
           if-no-files-found: warn
-
