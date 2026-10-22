@@ -75,7 +75,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart; Check: IsAdminInstallMode
 
 [Run]
-Filename: "{cmd}"; Parameters: "/c start """"{app}\{#MyAppExeName}"""; Description: "Запустить {#MyAppName}"; Flags: nowait runhidden
+Filename: "{cmd}"; Parameters: "/c start ""SteamPACC"" ""{app}\{#MyAppExeName}"""; Description: "Запустить {#MyAppName}"; Flags: nowait runhidden
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
