@@ -121,7 +121,9 @@ jobs:
             exit 1
           fi
           echo "Используется ISCC: $ISCC"
-          "$ISCC" "/DMyAppVersion=$VERSION" installer/SteamPACC.iss
+          # MSYS_NO_PATHCONV=1 обязателен: без него Git Bash превращает
+          # /DMyAppVersion=... в путь, и ISCC считает его именем файла.
+          env MSYS_NO_PATHCONV=1 "$ISCC" "/DMyAppVersion=$VERSION" installer/SteamPACC.iss
           ls -la dist
 
       - name: Сохранение установщика как артефакт
