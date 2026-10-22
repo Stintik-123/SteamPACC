@@ -17,6 +17,8 @@
 * ``--selftest`` - создать отчёт о системе и выйти;
 * ``--smoke`` - проверить, что графическая часть работает;
 * ``--prices APPID`` - показать цены игры прямо в консоли (без графики);
+* ``--enable-autostart`` - включить запуск программы вместе с Windows;
+* ``--disable-autostart`` - выключить запуск программы вместе с Windows;
 * ``--autostart`` - флаг, что запуск из автозагрузки Windows.
 """
 
@@ -66,6 +68,8 @@ HELP_TEXT = '\n'.join((
     '  --selftest                проверить систему и сохранить отчёт',
     '  --smoke                   проверить, что графическая часть работает',
     '  --prices APPID            показать цены игры APPID в консоли',
+    '  --enable-autostart        включить запуск вместе с Windows',
+    '  --disable-autostart       выключить запуск вместе с Windows',
     '  --autostart               запуск из автозагрузки Windows',
 ))
 
@@ -185,6 +189,61 @@ def _run_smoke() -> int:
     return int(smoke_test())
 
 
+def _current_program_path() -> str:
+    """Возвращает путь к программе, который нужно записать в автозапуск.
+
+    В собранном виде (PyInstaller) это SteamPACC.exe; при запуске из
+    исходников — pythonw.exe с модулем steampacc, чтобы Windows запускала
+    программу без окна консоли.
+    """
+    import sys
+    from pathlib import Path
+
+    frozen = getattr(sys, 'frozen', False)
+    if frozen:
+        return str(Path(sys.executable))
+    # Из исходников: запускаем пакет через интерпретатор без окна консоли.
+    python = Path(sys.executable)
+    pythonw = python.with_name('pythonw' + python.suffix)
+    if pythonw.exists():
+        return str(pythonw)
+    return str(python)
+
+
+def _autostart_arguments() -> str:
+    """Аргументы автозапуска: из собранного файла — флаг, иначе -m steampacc."""
+    import sys
+
+    if getattr(sys, 'frozen', False):
+        return AUTOSTART_FLAG
+    return '-m steampacc ' + AUTOSTART_FLAG
+
+
+def _set_autostart(enable: bool) -> int:
+    """Включает или выключает запуск программы вместе с Windows.
+
+    Работает через командную строку (reg.exe), права администратора не
+    нужны. Вне Windows честно сообщает, что автозапуск недоступен.
+    """
+    from steampacc.diagnostics import safe_print
+    from steampacc import win_api
+
+    if not win_api.is_available():
+        safe_print('Автозапуск доступен только в Windows.')
+        return 1
+    executable = _current_program_path()
+    command = win_api.build_autostart_command(executable, _autostart_arguments())
+    ok = win_api.register_autostart(executable, enable=enable)
+    if not ok:
+        safe_print('Не удалось изменить автозапуск: проверьте доступ к реестру.')
+        return 1
+    state = 'включён' if enable else 'выключен'
+    safe_print('Автозапуск SteamPACC ' + state + '.')
+    if enable:
+        safe_print('Запись в реестре: ' + command)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Запускает программу и возвращает код выхода.
     
@@ -205,6 +264,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_smoke()
         if PRICES_FLAG in args:
             return _run_prices(args)
+        if ENABLE_AUTOSTART_FLAG in args:
+            return _set_autostart(True)
+        if DISABLE_AUTOSTART_FLAG in args:
+            return _set_autostart(False)
         
         # Normal launch
         from steampacc.app import run
