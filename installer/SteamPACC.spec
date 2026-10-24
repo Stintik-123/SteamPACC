@@ -32,7 +32,8 @@ a = Analysis(
     [ENTRY],
     pathex=[SRC],
     binaries=[],
-    datas=[],
+    # Значок приложения: трей и окно настроек грузят его из ресурсов.
+    datas=[(os.path.join(SRC, 'steampacc', 'assets', 'steampacc.ico'), 'assets')],
     # Модули, которые импортируются внутри функций: подсказываем
     # PyInstaller, что их нельзя выкинуть при анализе импортов.
     hiddenimports=[
@@ -59,6 +60,7 @@ exe = EXE(
     a.datas,
     [],
     name=NAME,
+    icon=os.path.join(SRC, 'steampacc', 'assets', 'steampacc.ico'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

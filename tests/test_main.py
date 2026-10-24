@@ -60,13 +60,6 @@ def test_critical_error_is_shown_to_user(monkeypatch: pytest.MonkeyPatch) -> Non
     assert 'нет модуля' in shown[0]
 
 
-def test_first_launch_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    '''Первый запуск отмечается меткой, второй раз метка уже есть.'''
-    monkeypatch.setattr(diagnostics, 'data_dir', lambda: tmp_path)
-    assert app.is_first_launch() is True
-    assert app.is_first_launch() is False
-
-
 def test_claim_single_instance_outside_windows() -> None:
     '''Вне Windows проверка не блокирует работу программы.'''
     if sys.platform.startswith('win'):

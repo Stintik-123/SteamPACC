@@ -3,10 +3,10 @@
 ;
 ; Версию установщика можно задать при сборке, чтобы она совпадала
 ; с версией программы из src/steampacc/__init__.py:
-;     ISCC /DMyAppVersion=1.0.0 installer\SteamPACC.iss
+;     ISCC /DMyAppVersion=1.0.1 installer\SteamPACC.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.1"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
@@ -37,6 +37,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 LicenseFile=..\LICENSE
+SetupIconFile=..\src\steampacc\assets\steampacc.ico
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no

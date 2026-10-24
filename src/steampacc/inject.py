@@ -465,8 +465,8 @@ INJECTED_SETTINGS_SCRIPT = r'''
     }
   }
 
-  var ICON_SVG = '<svg viewBox="0 0 36 36" width="18" height="18" xmlns="http://www.w3.org/2000/svg">'
-      + '<circle cx="18" cy="18" r="15" fill="#66c0f4"/>'
+  var ICON_SVG = '<svg viewBox="0 0 36 36" width="20" height="20" xmlns="http://www.w3.org/2000/svg">'
+      + '<circle cx="18" cy="18" r="16" fill="#66c0f4"/>'
       + '<path d="M12 26V10h9a6 6 0 0 1 0 12h-6" fill="none" stroke="#1b2838" stroke-width="3.4" stroke-linecap="round"/>'
       + '</svg>';
 
@@ -492,8 +492,12 @@ INJECTED_SETTINGS_SCRIPT = r'''
     navItem.className = ref.className;
     navItem.setAttribute('role', 'tab');
     navItem.setAttribute('aria-selected', 'false');
+    // Иконка: берём класс родной (даёт размер и отступы), но вставляем
+    // в неё свой значок вместо чужого.
     var icon = document.createElement('div');
-    icon.style.cssText = 'display:flex; align-items:center; width:18px; height:18px;';
+    if (ref.children.length >= 1) {
+      icon.className = ref.children[0].className;
+    }
     icon.innerHTML = ICON_SVG;
     navItem.appendChild(icon);
     var label = document.createElement('div');

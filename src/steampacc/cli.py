@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from typing import Sequence
 
-from .app import cached_price, cache_path, load_cache, save_cache, store_price
+from .pricecache import cached_price, cache_path, load_cache, save_cache, store_price
 from .config import load_settings
 from .diagnostics import safe_print
 from .library import InstalledGame, iter_library_games, read_library_folders
