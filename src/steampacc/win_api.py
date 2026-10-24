@@ -25,6 +25,14 @@ GWL_EXSTYLE = -20
 #: Индекс обычного стиля окна.
 GWL_STYLE = -16
 
+#: Право доступа к процессу: только чтение сведений, без управления.
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+#: Расширенные стили окна: клики проходят сквозь окно и оно не активируется.
+WS_EX_LAYERED = 0x00080000
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_NOACTIVATE = 0x08000000
+
 
 class WinApiError(Exception):
     '''Ошибка вызова WinAPI с понятным русским текстом.'''
@@ -132,6 +140,28 @@ def find_window_by_class(class_name: str) -> int:
     return int(hwnd) if hwnd else 0
 
 
+def enum_windows() -> list[int]:
+    '''Перечисляет все окна верхнего уровня и возвращает их дескрипторы.
+
+    Порядок совпадает с Z-порядком системы: первыми идут активные окна.
+    '''
+    if not is_available():
+        return []
+    user32 = _lib()
+    found: list[int] = []
+    proc_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ssize_t, ctypes.c_ssize_t)
+
+    def callback(hwnd: int, _lparam: int) -> bool:
+        found.append(int(hwnd))
+        return True
+
+    callback_ref = proc_type(callback)  # держим ссылку: ctypes не хранит её сам
+    user32.EnumWindows.argtypes = [proc_type, ctypes.c_ssize_t]
+    user32.EnumWindows.restype = ctypes.c_bool
+    user32.EnumWindows(callback_ref, 0)
+    return found
+
+
 def is_window(hwnd: int) -> bool:
     '''True, если дескриптор указывает на существующее окно.'''
     hwnd = _require_hwnd(hwnd)
@@ -173,6 +203,82 @@ def is_minimized(hwnd: int) -> bool:
     '''True, если окно свёрнуто.'''
     hwnd = _require_hwnd(hwnd)
     return bool(_lib().IsIconic(ctypes.c_void_p(hwnd)))
+
+
+def is_window_visible(hwnd: int) -> bool:
+    '''True, если окно видно на экране.'''
+    hwnd = _require_hwnd(hwnd)
+    user32 = _lib()
+    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    user32.IsWindowVisible.restype = ctypes.c_int
+    return bool(user32.IsWindowVisible(ctypes.c_void_p(hwnd)))
+
+
+def window_process_id(hwnd: int) -> int:
+    '''Идентификатор процесса, владеющего окном; 0, если узнать не удалось.'''
+    hwnd = _require_hwnd(hwnd)
+    pid = ctypes.c_ulong(0)
+    user32 = _lib()
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+    user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+    user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+    return int(pid.value)
+
+
+def window_process_image(hwnd: int) -> str:
+    '''Путь к исполняемому файлу процесса-владельца окна.
+
+    Возвращает пустую строку, если сведения получить не удалось: на
+    системах без Windows или при отказе в доступе программа не падает.
+    '''
+    if not is_available():
+        return ''
+    pid = window_process_id(hwnd)
+    if pid <= 0:
+        return ''
+    kernel32 = _kernel32()
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.POINTER(ctypes.c_wchar),
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = ctypes.c_bool
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ''
+    try:
+        size = ctypes.c_ulong(1024)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(
+            ctypes.c_void_p(handle), 0, buffer, ctypes.byref(size)
+        ):
+            return ''
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def make_click_through(hwnd: int) -> bool:
+    '''Делает окно прозрачным для мыши и неактивируемым.
+
+    Оверлей перестаёт перехватывать клики даже там, где флага Qt
+    WindowTransparentForInput недостаточно. Возвращает True при успехе.
+    '''
+    hwnd = _require_hwnd(hwnd)
+    user32 = _lib()
+    user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+    user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    style = int(user32.GetWindowLongPtrW(ctypes.c_void_p(hwnd), GWL_EXSTYLE))
+    if style <= 0:
+        return False
+    new_style = style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
+    user32.SetWindowLongPtrW(ctypes.c_void_p(hwnd), GWL_EXSTYLE, new_style)
+    return True
 
 
 #: Код ошибки Windows: объект с таким именем уже существует.

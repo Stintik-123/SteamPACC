@@ -1,22 +1,28 @@
 """Графическая часть SteamPACC: оверлей поверх окна Steam.
 
-Модуль отвечает за отображение цен игр в оверлее поверх окна Steam.
-Стиль оверлея максимально приближен к нативному стилю Steam.
+Модуль отвечает за отображение цен игр в оверлее поверх активного окна.
+Стиль оверлея приближен к нативному стилю Steam.
 
-Основные функции:
-- Автоматическое обнаружение активной игры
-- Отображение цен в нативном стиле Steam
-- Кэширование цен для быстрой работы
-- Интеграция с треем Windows
-- Настройки через контекстное меню
+Как это работает:
+
+- каждые полторы секунды программа смотрит, какое окно активно;
+- если активна игра из библиотеки Steam, оверлей показывает цены этой
+  игры в выбранных валютах (по углу окна игры);
+- если активно само окно Steam, показываются цены последней открытой
+  игры, а если игр ещё не было — короткая подсказка;
+- сеть и чтение библиотеки работают в фоновых потоках: интерфейс не
+  замирает;
+- оверлей прозрачен для мыши: клики проходят сквозь него.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -24,7 +30,8 @@ from typing import Any
 from . import win_api
 from . import diagnostics
 from . import __version__ as app_version
-from .config import Settings, load_settings, save_settings
+from . import autostart
+from .config import Settings, apply_changes, load_settings, save_settings
 from .diagnostics import (
     log_exception,
     log_message,
@@ -40,7 +47,7 @@ from .prices import (
     format_price,
 )
 from .steam_paths import find_steam_root, steam_paths
-from .library import iter_library_games, read_library_folders
+from .library import InstalledGame, iter_library_games, read_library_folders
 
 try:
     from PySide6.QtCore import QSize, QTimer, Qt, Signal, QObject
@@ -55,6 +62,7 @@ try:
         QDialog,
         QDoubleSpinBox,
         QFormLayout,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QMenu,
@@ -69,16 +77,23 @@ except ImportError:
     QT_AVAILABLE = False
 
 
-# Steam window classes to detect
-STEAM_WINDOW_CLASSES = ('SteamMainWindow', 'SteamClient', 'vguiPopupWindow')
+# Классы окон Steam: сравнение ведётся без учёта регистра.
+STEAM_WINDOW_CLASSES = ('STEAMMAINWINDOW', 'STEAMCLIENT', 'VGUIPOPUPWINDOW')
 
-# Cache settings
+#: Класс окна клиента Steam новой версии. Его используют и игры на SDL,
+#: поэтому окно Steam по нему опознаётся дополнительно: по заголовку
+#: «Steam» или по процессу steam.exe.
+STEAM_SDL_CLASS = 'sdl_app'
+
+# Кэш настроек
 CACHE_FILE_NAME = 'prices.json'
-CACHE_TTL = 900  # 15 minutes in seconds
+CACHE_TTL = 900  # 15 минут
+CACHE_MAX_GAMES = 256  # столько игр хранится в кэше цен
 
-# Panel positioning
+# Позиционирование панели
 PANEL_MARGIN = 24
-UPDATE_INTERVAL_MS = 2000  # вернул 2 c: сеть пока синхронная, 300 мс = фризы
+UPDATE_INTERVAL_MS = 1500
+FETCH_RETRY_SECONDS = 120  # повтор запроса после неудачи не раньше, чем через 2 минуты
 
 #: Якоря положения панели оверлея.
 ANCHORS = ('top_left', 'top_right', 'bottom_left', 'bottom_right')
@@ -93,6 +108,13 @@ STEAM_BORDER = (50, 60, 75)     # Border color
 
 # Single instance mutex name
 SINGLE_INSTANCE_MUTEX = 'SteamPACC.SingleInstance'
+
+#: Системные процессы, которые не считаются играми.
+NON_GAME_PROCESSES = frozenset({
+    'steam.exe', 'steamwebhelper.exe', 'steampacc.exe', 'python.exe',
+    'pythonw.exe', 'explorer.exe', 'applicationframehost.exe',
+    'searchhost.exe', 'shellexperiencehost.exe', 'textinputhost.exe',
+})
 
 
 # =============================================================================
@@ -144,6 +166,8 @@ def format_price_lines(prices: dict[str, Price], game_name: str | None = None) -
         lines.append(game_name)
     for code in sorted(prices):
         price = prices[code]
+        if price is None:
+            continue
         label = price.currency or code.upper()
         lines.append(label + ': ' + format_price(price))
     if not lines:
@@ -160,18 +184,39 @@ def cache_path() -> Path:
 
 
 def load_cache(path: Path) -> dict[str, Any]:
-    """Load price cache from file."""
+    '''Читает кэш цен; повреждённый или старый файл не ломает программу.
+
+    Кэш хранится по играм: {appid: {валюта: {time, price}}}. Записи
+    старого формата (по валютам, одна игра на файл) переносятся в новый.
+    '''
     try:
-        if path.exists():
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        if not path.exists():
+            return {}
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
     except Exception:
-        pass
-    return {}
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        if str(key).isdigit():
+            result[str(key)] = value
+            continue
+        # Старый формат: ключ — валюта, внутри одна запись с appid.
+        appid = value.get('appid')
+        record = value.get('price')
+        if isinstance(appid, int) and isinstance(record, dict):
+            bucket = result.setdefault(str(appid), {})
+            if isinstance(bucket, dict) and key not in bucket:
+                bucket[key] = {'time': value.get('time'), 'price': record}
+    return result
 
 
 def save_cache(path: Path, data: dict[str, Any]) -> bool:
-    """Save price cache to file."""
+    '''Сохраняет кэш цен в файл; ошибка записи не прерывает работу.'''
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
@@ -179,30 +224,29 @@ def save_cache(path: Path, data: dict[str, Any]) -> bool:
         return True
     except OSError:
         return False
-    return True
 
 
-def cached_price(cache: dict[str, Any], appid: int, country: str, ttl: int = CACHE_TTL) -> Price | None:
-    """Get price from cache if valid."""
-    entry = cache.get(country)
+def cached_price(cache: dict[str, Any], appid: int, currency: str, ttl: int = CACHE_TTL) -> Price | None:
+    '''Возвращает цену из кэша, если запись свежая и относится к той же игре.'''
+    bucket = cache.get(str(appid))
+    if not isinstance(bucket, dict):
+        return None
+    entry = bucket.get(currency)
     if not isinstance(entry, dict):
         return None
-    
-    if entry.get('appid') != appid:
-        return None
-    
+
     stamp = entry.get('time')
     if not isinstance(stamp, int) or int(time.time()) - stamp > ttl:
         return None
-    
+
     data = entry.get('price')
     if not isinstance(data, dict):
         return None
-    
+
     try:
         return Price(
             appid=int(data.get('appid', appid)),
-            country=country,
+            country=currency.lower(),
             currency=str(data.get('currency', '')),
             final=data.get('final') if isinstance(data.get('final'), int) else None,
             initial=data.get('initial') if isinstance(data.get('initial'), int) else None,
@@ -214,8 +258,30 @@ def cached_price(cache: dict[str, Any], appid: int, country: str, ttl: int = CAC
         return None
 
 
+def store_price(cache: dict[str, Any], appid: int, currency: str, price: Price) -> None:
+    '''Кладёт цену в кэш; размер кэша ограничен, старые игры вытесняются.'''
+    bucket = cache.setdefault(str(appid), {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        cache[str(appid)] = bucket
+    bucket[currency] = {
+        'time': int(time.time()),
+        'price': price_to_dict(price),
+    }
+    if len(cache) > CACHE_MAX_GAMES:
+        oldest = min(
+            (key for key in cache if str(key).isdigit()),
+            key=lambda key: max(
+                (item.get('time', 0) for item in cache[key].values()
+                 if isinstance(item, dict)),
+                default=0,
+            ),
+        )
+        cache.pop(oldest, None)
+
+
 def price_to_dict(price: Price) -> dict[str, Any]:
-    """Convert Price to dictionary for caching."""
+    '''Convert Price to dictionary for caching.'''
     return {
         'appid': price.appid,
         'currency': price.currency,
@@ -228,26 +294,107 @@ def price_to_dict(price: Price) -> dict[str, Any]:
 
 
 def watch_currencies(settings: Settings) -> list[str]:
-    """Get list of currencies to display."""
+    '''Get list of currencies to display.'''
     codes = [code.upper() for code in settings.currencies if code]
     return codes or ['RUB', 'USD', 'EUR']
+
+
+def build_exe_map(games: Any) -> dict[str, int]:
+    '''Сопоставляет имена исполняемых файлов игр с их appid.
+
+    Обходятся каталоги установки без вложенности: большинство игр
+    держит запускаемый файл прямо в папке игры. Имена приводятся к
+    нижнему регистру, первая встреченная игра закрепляет имя за собой.
+    '''
+    result: dict[str, int] = {}
+    for game in games:
+        folder = Path(game.install_dir)
+        if not folder.is_dir():
+            continue
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name.lower()
+            if not name.endswith('.exe'):
+                continue
+            try:
+                if not entry.is_file():
+                    continue
+            except OSError:
+                continue
+            result.setdefault(name, game.appid)
+    return result
+
+
+def game_by_title(title: str, names: dict[str, int], min_length: int = 4) -> int | None:
+    '''Ищет игру по подстроке в заголовке окна.
+
+    Совпадает самое длинное имя игры, целиком вошедшее в заголовок.
+    Короткие имена пропускаются, чтобы «GOA» или « preparation» не
+    давали ложных срабатываний.
+    '''
+    if not title or not names:
+        return None
+    needle = title.lower()
+    best: tuple[int, int] | None = None
+    for name, appid in names.items():
+        if len(name) >= min_length and name in needle:
+            if best is None or len(name) > best[0]:
+                best = (len(name), appid)
+    return best[1] if best else None
 
 
 # =============================================================================
 # Window Detection
 # =============================================================================
 
-def find_steam_window() -> tuple[int, int, int, int] | None:
-    """Find Steam window and return its rectangle."""
-    for class_name in STEAM_WINDOW_CLASSES:
-        try:
-            hwnd = win_api.find_window_by_class(class_name)
-        except win_api.WinApiError:
-            return None
+def is_steam_window(class_name: str, title: str, hwnd: int = 0) -> bool:
+    '''True, если окно принадлежит клиенту Steam.
+
+    Главный класс новой версии клиента — SDL_app: с тем же классом
+    выходят и игры на SDL, поэтому окно Steam опознаётся по заголовку
+    «Steam» или по процессу steam.exe. Остальные классы сверяются со
+    списком STEAM_WINDOW_CLASSES без учёта регистра.
+    '''
+    cls = (class_name or '').strip().lower()
+    if cls == STEAM_SDL_CLASS:
+        if (title or '').strip().lower() == 'steam':
+            return True
         if not hwnd:
+            return False
+        try:
+            image = win_api.window_process_image(hwnd)
+        except win_api.WinApiError:
+            return False
+        return image.lower().endswith(chr(92) + 'steam.exe')
+    return cls in {name.lower() for name in STEAM_WINDOW_CLASSES}
+
+
+def find_steam_window() -> tuple[int, int, int, int] | None:
+    '''Ищет видимое окно Steam и возвращает его прямоугольник.
+
+    Окна перебираются целиком: у Steam несколько окон одного класса
+    (служебные окна steamwebhelper), и FindWindowW находит первое
+    попавшееся, часто невидимое.
+    '''
+    try:
+        windows = win_api.enum_windows()
+    except win_api.WinApiError:
+        return None
+    for hwnd in windows:
+        try:
+            if not win_api.is_window_visible(hwnd):
+                continue
+            class_name = win_api.window_class(hwnd)
+            title = win_api.window_title(hwnd)
+        except win_api.WinApiError:
+            continue
+        if not is_steam_window(class_name, title, hwnd):
             continue
         rect = win_api.window_rect(hwnd)
-        if rect is not None:
+        if rect is not None and rect[2] > rect[0] and rect[3] > rect[1]:
             return rect
     return None
 
@@ -283,13 +430,14 @@ def is_minimized(hwnd: int) -> bool:
 if QT_AVAILABLE:
     class NativeOverlayWindow(QWidget):
         """Overlay window with Steam-like styling."""
-        
+
         def __init__(self, settings: Settings):
             super().__init__(None)
             self._settings = settings
             self._lines: list[str] = []
             self._game_name: str | None = None
-            
+            self._click_through_done = False
+
             # Window flags for overlay
             self.setWindowFlags(
                 Qt.WindowType.FramelessWindowHint
@@ -300,18 +448,12 @@ if QT_AVAILABLE:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
             self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-            
-            # Steam-like styling
+
+            self._apply_fonts()
             self.setWindowOpacity(float(settings.overlay_opacity))
-            
-            # Fonts
-            self._font = QFont("Segoe UI", 10)
-            self._bold_font = QFont("Segoe UI", 11, QFont.Weight.Bold)
-            
-            # Corner radius
+
             self._corner_radius = 8
-            
-            # Colors
+
             self._colors = {
                 'dark_bg': QColor(*STEAM_DARK_BG),
                 'darker_bg': QColor(*STEAM_DARKER_BG),
@@ -320,180 +462,181 @@ if QT_AVAILABLE:
                 'text_dim': QColor(*STEAM_TEXT_DIM),
                 'border': QColor(*STEAM_BORDER),
             }
-        
+
+        def _apply_fonts(self) -> None:
+            '''Строит шрифты панели с учётом масштаба из настроек.'''
+            scale = max(50, min(200, int(self._settings.overlay_scale))) / 100.0
+            self._font = QFont('Segoe UI', max(8, round(10 * scale)))
+            self._bold_font = QFont('Segoe UI', max(9, round(11 * scale)), QFont.Weight.Bold)
+
+        def apply_settings(self, settings: Settings) -> None:
+            '''Применяет новые настройки прозрачности и масштаба.'''
+            self._settings = settings
+            self._apply_fonts()
+            self.setWindowOpacity(float(settings.overlay_opacity))
+            self.update()
+
         def set_lines(self, lines: list[str], game_name: str | None = None) -> None:
             """Set lines to display."""
             self._lines = list(lines)
             self._game_name = game_name
             self.update()
-            self.updateGeometry()
-        
+
+        def show_overlay(self) -> None:
+            '''Показывает оверлей, не перехватывая фокус и клики.'''
+            if not self.isVisible():
+                self.show()
+                if not self._click_through_done:
+                    try:
+                        win_api.make_click_through(int(self.winId()))
+                        self._click_through_done = True
+                    except win_api.WinApiError:
+                        pass
+            self.raise_()
+
         def sizeHint(self) -> QSize:
             """Calculate size based on content."""
             if not self._lines:
                 return QSize(200, 80)
-            
-            scale = self._settings.overlay_scale
-            char_width = max(8 * scale // 100, 1)
-            line_height = max(20 * scale // 100, 1)
-            
-            # Calculate width
+
             fm = QFontMetrics(self._font)
             max_width = max(fm.horizontalAdvance(line) for line in self._lines)
-            
+
             if self._game_name:
                 fm_bold = QFontMetrics(self._bold_font)
                 game_width = fm_bold.horizontalAdvance(self._game_name)
                 max_width = max(max_width, game_width)
-            
+
             width = max(max_width + 32, 200)
-            height = len(self._lines) * line_height + 40
-            
+            height = 14 + fm.height() * len(self._lines) + 14
             if self._game_name:
-                height += line_height + 10
-            
+                height += QFontMetrics(self._bold_font).height() + 12
             return QSize(width, height)
-        
+
         def paintEvent(self, event: Any) -> None:
             """Paint overlay with Steam-like styling."""
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            
+
             # Draw background with rounded corners
             rect = self.rect()
             path = QPainterPath()
             path.addRoundedRect(rect, self._corner_radius, self._corner_radius)
-            
+
             # Gradient background
             gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
             gradient.setColorAt(0, self._colors['dark_bg'])
             gradient.setColorAt(1, self._colors['darker_bg'])
-            
+
             painter.fillPath(path, QBrush(gradient))
-            
+
             # Draw border
             painter.setPen(QPen(self._colors['border'], 1))
             painter.drawPath(path)
-            
-            # Draw content
-            painter.setPen(QPen(self._colors['text']))
-            
+
             x = 16
-            y = 14
-            
-            # Draw game name (bold)
+            fm = QFontMetrics(self._font)
+
+            # Draw game name (bold) and separator
             if self._game_name:
+                bold_fm = QFontMetrics(self._bold_font)
                 painter.setFont(self._bold_font)
-                painter.drawText(x, y + self._bold_font.pointSize() + 2, self._game_name)
-                y += self._bold_font.pointSize() + 8
-                
-                # Draw separator line
+                painter.setPen(QPen(self._colors['accent']))
+                y = 14 + bold_fm.ascent()
+                painter.drawText(x, y, self._game_name)
+                y += bold_fm.descent() + 6
                 painter.setPen(QPen(self._colors['border'], 1))
                 painter.drawLine(x, y, self.width() - 16, y)
                 y += 8
-            
+            else:
+                y = 14
+
             # Draw price lines
             painter.setFont(self._font)
-            painter.setPen(QPen(self._colors['text']))  # вернуть цвет текста после сепаратора
-            line_height = QFontMetrics(self._font).height()
-            
+            painter.setPen(QPen(self._colors['text']))
+
             for line in self._lines:
-                painter.drawText(x, y + line_height, line)
-                y += line_height
-            
+                painter.drawText(x, y + fm.ascent(), line)
+                y += fm.height()
+
             painter.end()
 
     class SettingsDialog(QDialog):
         """Settings dialog."""
-        
+
         def __init__(self, settings: Settings, parent: QWidget | None = None):
             super().__init__(parent)
             self._settings = settings
-            self.setWindowTitle("SteamPACC - Настройки")
-            self.setMinimumWidth(450)
-            
+            self.setWindowTitle('SteamPACC — Настройки')
+            self.setMinimumWidth(480)
+
             layout = QVBoxLayout()
-            
-            # ===== General Settings =====
-            general_group = QGroupBox("Отображение")
+
+            # ===== Currencies =====
+            currency_group = QGroupBox('Валюты для показа')
+            currency_grid = QGridLayout()
+            current = {code.upper() for code in settings.currencies}
+            self.currency_checks: dict[str, QCheckBox] = {}
+            for index, code in enumerate(sorted(CURRENCY_SYMBOLS)):
+                symbol = CURRENCY_SYMBOLS[code]
+                box = QCheckBox(code + '  ' + symbol)
+                box.setChecked(code in current)
+                self.currency_checks[code] = box
+                currency_grid.addWidget(box, index // 4, index % 4)
+            currency_group.setLayout(currency_grid)
+            layout.addWidget(currency_group)
+
+            # ===== Appearance =====
+            general_group = QGroupBox('Отображение')
             general_form = QFormLayout()
-            
-            # Currencies
-            self.currency_combo = QComboBox()
-            currency_presets = [
-                ("Русский (RUB, USD, EUR)", ("RUB", "USD", "EUR")),
-                ("Английский (USD, EUR, GBP)", ("USD", "EUR", "GBP")),
-                ("Турецкий (TRY, USD, EUR)", ("TRY", "USD", "EUR")),
-                ("Казахстанский (KZT, RUB, USD)", ("KZT", "RUB", "USD")),
-                ("Все валюты", tuple(sorted(CURRENCY_COUNTRIES))),
-            ]
-            
-            for text, codes in currency_presets:
-                self.currency_combo.addItem(text, codes)
-            
-            # Find current preset
-            current = list(settings.currencies)
-            for i, (text, codes) in enumerate(currency_presets):
-                if list(codes) == current:
-                    self.currency_combo.setCurrentIndex(i)
-                    break
-            
-            general_form.addRow("Валюты:", self.currency_combo)
-            
-            # Opacity
+
             self.opacity_spin = QDoubleSpinBox()
-            self.opacity_spin.setRange(0.5, 1.0)
+            self.opacity_spin.setRange(0.3, 1.0)
             self.opacity_spin.setSingleStep(0.1)
             self.opacity_spin.setValue(settings.overlay_opacity)
-            general_form.addRow("Прозрачность:", self.opacity_spin)
-            
-            # Scale
+            general_form.addRow('Прозрачность:', self.opacity_spin)
+
             self.scale_spin = QSpinBox()
             self.scale_spin.setRange(75, 150)
             self.scale_spin.setValue(settings.overlay_scale)
-            general_form.addRow("Масштаб:", self.scale_spin)
-            
+            general_form.addRow('Масштаб, %:', self.scale_spin)
+
             general_group.setLayout(general_form)
             layout.addWidget(general_group)
-            
-            # ===== Behavior Settings =====
-            behavior_group = QGroupBox("Поведение")
+
+            # ===== Behavior =====
+            behavior_group = QGroupBox('Поведение')
             behavior_layout = QVBoxLayout()
-            
-            self.autostart_check = QCheckBox("Запускать с Windows")
+
+            self.autostart_check = QCheckBox('Запускать вместе с Windows')
             self.autostart_check.setChecked(settings.launch_with_steam)
             behavior_layout.addWidget(self.autostart_check)
-            
-            self.show_on_game_check = QCheckBox("Показывать только на страницах игр")
-            self.show_on_game_check.setChecked(True)
-            behavior_layout.addWidget(self.show_on_game_check)
-            
+
             behavior_group.setLayout(behavior_layout)
             layout.addWidget(behavior_group)
-            
+
             # ===== Buttons =====
             button_layout = QHBoxLayout()
             button_layout.addStretch()
-            
-            save_btn = QPushButton("Сохранить")
+
+            save_btn = QPushButton('Сохранить')
             save_btn.clicked.connect(self.accept)
             button_layout.addWidget(save_btn)
-            
-            cancel_btn = QPushButton("Отмена")
+
+            cancel_btn = QPushButton('Отмена')
             cancel_btn.clicked.connect(self.reject)
             button_layout.addWidget(cancel_btn)
-            
+
             layout.addLayout(button_layout)
             self.setLayout(layout)
-        
+
         def get_settings(self) -> dict:
             """Get updated settings."""
-            currencies = self.currency_combo.currentData()
-            if not currencies:
-                currencies = ("RUB", "USD", "EUR")
-            
+            currencies = [
+                code for code, box in self.currency_checks.items() if box.isChecked()
+            ]
             return {
-                'currencies': list(currencies),
+                'currencies': currencies or ['RUB', 'USD', 'EUR'],
                 'overlay_opacity': self.opacity_spin.value(),
                 'overlay_scale': self.scale_spin.value(),
                 'launch_with_steam': self.autostart_check.isChecked(),
@@ -506,38 +649,272 @@ if QT_AVAILABLE:
 
 if QT_AVAILABLE:
     class AppController(QObject):
-        """Main application controller."""
-        
-        settings_changed = Signal()
-        
+        """Main application controller: оверлей, трей, фоновая сеть."""
+
+        _prices_ready = Signal(int, dict)
+
         def __init__(self, application: QApplication):
             super().__init__()
             self._app = application
             self._settings = load_settings()
-            self._cache: dict[str, Any] = {}
             self._cache_file = cache_path()
-            self._games: dict[str, int] = {}  # name.lower() -> appid
-            
-            # Load cache
-            self._cache = load_cache(self._cache_file)
-            
-            # Create overlay window
+            self._cache: dict[str, Any] = load_cache(self._cache_file)
+            self._cache_lock = threading.Lock()
+
+            # Библиотека игр: appid -> имя, имя -> appid, exe -> appid.
+            self._names: dict[int, str] = {}
+            self._games: dict[str, int] = {}
+            self._exe_map: dict[str, int] = {}
+
+            # Состояние показа.
+            self._shown_appid: int | None = None
+            self._last_appid: int | None = None
+            self._last_name: str | None = None
+
+            # Фоновые потоки.
+            self._stop_event = threading.Event()
+            self._fetch_queue: queue.Queue[tuple[int, tuple[str, ...]]] = queue.Queue()
+            self._in_flight: set[int] = set()
+            self._in_flight_lock = threading.Lock()
+            self._fail_times: dict[int, float] = {}
+
             self._window = NativeOverlayWindow(self._settings)
-            
-            # Tray icon
+
             self._tray_icon = None
             self._setup_tray()
-            
-            # Update timer
+
+            self._prices_ready.connect(self._on_prices_ready)
+
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker.start()
+            self._library_thread = threading.Thread(target=self._load_games, daemon=True)
+            self._library_thread.start()
+
             self._timer = QTimer()
             self._timer.timeout.connect(self._update_overlay)
             self._timer.start(UPDATE_INTERVAL_MS)
-            
-            # State
-            self._last_appid: int | None = None
-            self._last_show_time: float = 0
-            self._min_show_interval: float = 0.5  # Don't update too frequently
-        
+
+        # ----- Фоновые потоки -----
+
+        def _worker_loop(self) -> None:
+            '''Фоновый цикл: берёт игры из очереди и качает цены без блокировки GUI.'''
+            while not self._stop_event.is_set():
+                try:
+                    appid, currencies = self._fetch_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                result: dict[str, Price] = {}
+                for code in currencies:
+                    if self._stop_event.is_set():
+                        break
+                    with self._cache_lock:
+                        price = cached_price(self._cache, appid, code)
+                    if price is None:
+                        country = CURRENCY_COUNTRIES.get(code, code.lower())
+                        try:
+                            price = fetch_price(appid, country)
+                        except PriceError as error:
+                            log_message('Цена ' + code + ' для ' + str(appid)
+                                        + ' не получена: ' + str(error))
+                            continue
+                        with self._cache_lock:
+                            store_price(self._cache, appid, code, price)
+                            save_cache(self._cache_file, self._cache)
+                    result[code] = price
+                with self._in_flight_lock:
+                    self._in_flight.discard(appid)
+                if result:
+                    self._prices_ready.emit(appid, result)
+
+        def _load_games(self) -> None:
+            '''Читает библиотеку Steam в фоновом потоке.'''
+            try:
+                root = find_steam_root()
+                if root is None:
+                    log_message('Каталог Steam не найден: определение игр по библиотеке отключено')
+                    return
+
+                roots: list[Path] = [root]
+                try:
+                    folders_file = steam_paths(root).libraryfolders_vdf
+                    if folders_file.is_file():
+                        text = folders_file.read_text(encoding='utf-8', errors='ignore')
+                        roots.extend(read_library_folders(text))
+                except OSError:
+                    pass
+
+                unique: list[Path] = []
+                for item in roots:
+                    if item not in unique:
+                        unique.append(item)
+
+                games = list(iter_library_games(unique))
+                exe_map = build_exe_map(games)
+                names: dict[int, str] = {}
+                by_name: dict[str, int] = {}
+                for game in games:
+                    names[game.appid] = game.name
+                    by_name[game.name.lower()] = game.appid
+                self._names = names
+                self._games = by_name
+                self._exe_map = exe_map
+                log_message('Загружено игр из библиотеки Steam: ' + str(len(names))
+                            + ', исполняемых файлов: ' + str(len(exe_map)))
+            except Exception as error:
+                log_exception('Ошибка загрузки библиотеки Steam: ' + str(error))
+
+        # ----- Определение игры -----
+
+        def _name_for(self, appid: int) -> str | None:
+            return self._names.get(appid)
+
+        def _detect_game(self, title: str, hwnd: int) -> tuple[int | None, str | None]:
+            '''Определяет игру по процессу активного окна, затем по заголовку.'''
+            try:
+                image = win_api.window_process_image(hwnd)
+            except win_api.WinApiError:
+                image = ''
+            if image:
+                exe = image.replace('/', chr(92)).rsplit(chr(92), 1)[-1].lower()
+                if exe and exe not in NON_GAME_PROCESSES:
+                    appid = self._exe_map.get(exe)
+                    if appid:
+                        return appid, self._name_for(appid)
+
+            if title:
+                match = re.search(r'App\s+(\d+)', title)
+                if match:
+                    appid = int(match.group(1))
+                    return appid, self._name_for(appid)
+                appid = game_by_title(title, self._games)
+                if appid:
+                    return appid, self._name_for(appid)
+            return None, None
+
+        # ----- Цены -----
+
+        def _prices_from_cache(self, appid: int) -> dict[str, Price]:
+            '''Читает цены из кэша, не трогая сеть.'''
+            result: dict[str, Price] = {}
+            with self._cache_lock:
+                for code in watch_currencies(self._settings):
+                    price = cached_price(self._cache, appid, code)
+                    if price is not None:
+                        result[code] = price
+            return result
+
+        def _request_prices(self, appid: int) -> None:
+            '''Ставит игру в очередь фоновой загрузки, если это нужно.'''
+            with self._in_flight_lock:
+                if appid in self._in_flight:
+                    return
+                failed_at = self._fail_times.get(appid, 0)
+                if time.time() - failed_at < FETCH_RETRY_SECONDS:
+                    return
+                missing = [
+                    code for code in watch_currencies(self._settings)
+                    if code not in self._prices_from_cache(appid)
+                ]
+                if not missing:
+                    return
+                self._in_flight.add(appid)
+            self._fetch_queue.put((appid, tuple(missing)))
+
+        def _on_prices_ready(self, appid: int, prices: dict[str, Price]) -> None:
+            '''Приём цен из фонового потока и обновление панели.'''
+            if not prices:
+                self._fail_times[appid] = time.time()
+                return
+            self._fail_times.pop(appid, None)
+            if appid == self._shown_appid:
+                lines = format_price_lines(prices)
+                self._window.set_lines(lines, self._last_name)
+
+        # ----- Показ оверлея -----
+
+        def _hide_overlay(self) -> None:
+            if self._window.isVisible():
+                self._window.hide()
+            self._shown_appid = None
+
+        def _update_overlay(self, force_show: bool = False) -> None:
+            """Update overlay with current game prices."""
+            try:
+                info = foreground_window()
+                if info is None:
+                    if not force_show:
+                        self._hide_overlay()
+                        return
+                    info = find_steam_window()
+                    if info is None:
+                        return
+                    rect = info
+                    hwnd, title, class_name = 0, '', ''
+                else:
+                    hwnd, rect, title, class_name = info
+
+                if hwnd and is_minimized(hwnd):
+                    if not force_show:
+                        self._hide_overlay()
+                        return
+
+                is_steam = is_steam_window(class_name, title, hwnd)
+
+                if is_steam:
+                    # Steam сам в фокусе: показываем цены последней игры.
+                    if self._last_appid is not None:
+                        appid = self._last_appid
+                        name = self._last_name
+                        prices = self._prices_from_cache(appid)
+                        self._request_prices(appid)
+                    else:
+                        lines = [
+                            'SteamPACC работает',
+                            'Запустите игру — и её цены',
+                            'появятся в разных валютах',
+                        ]
+                        self._window.set_lines(lines, 'SteamPACC')
+                        self._position_window(rect)
+                        self._window.show_overlay()
+                        self._shown_appid = None
+                        return
+                else:
+                    appid, name = self._detect_game(title, hwnd)
+                    if appid is None:
+                        if not force_show:
+                            self._hide_overlay()
+                            return
+                        lines = ['Нет данных о ценах']
+                        self._window.set_lines(lines, None)
+                        self._position_window(rect)
+                        self._window.show_overlay()
+                        return
+                    self._last_appid = appid
+                    self._last_name = name
+                    prices = self._prices_from_cache(appid)
+                    self._request_prices(appid)
+
+                self._shown_appid = appid
+                # Имя игры рисуется в заголовке панели, поэтому в строки
+                # цен оно не дублируется.
+                lines = format_price_lines(prices)
+                self._window.set_lines(lines, name)
+                self._position_window(rect)
+                self._window.show_overlay()
+
+            except Exception as error:
+                log_exception('Ошибка обновления оверлея: ' + str(error))
+                self._hide_overlay()
+
+        def _position_window(self, window_rect: tuple[int, int, int, int]) -> None:
+            """Position overlay window relative to active window."""
+            size = self._window.sizeHint()
+            x, y = overlay_position(window_rect, (size.width(), size.height()))
+            self._window.resize(size)
+            self._window.move(x, y)
+
+        # ----- Трей и настройки -----
+
         def _make_icon(self) -> QIcon:
             '''Рисует простой значок для трея.'''
             pixmap = QPixmap(32, 32)
@@ -549,221 +926,72 @@ if QT_AVAILABLE:
             painter.drawEllipse(2, 2, 28, 28)
             painter.end()
             return QIcon(pixmap)
-        
+
         def _setup_tray(self) -> None:
             """Setup system tray icon."""
             self._tray_icon = QSystemTrayIcon()
             self._tray_icon.setIcon(self._make_icon())
-            self._tray_icon.setToolTip("SteamPACC - Показ цен игр")
-            
-            # Create menu
+            self._tray_icon.setToolTip('SteamPACC — цены игр в разных валютах')
+
             menu = QMenu()
-            
-            show_action = QAction("Показать оверлей")
-            show_action.triggered.connect(self._force_show_overlay)
+
+            show_action = QAction('Показать оверлей')
+            show_action.triggered.connect(lambda: self._update_overlay(force_show=True))
             menu.addAction(show_action)
-            
-            settings_action = QAction("Настройки")
+
+            settings_action = QAction('Настройки')
             settings_action.triggered.connect(self._show_settings)
             menu.addAction(settings_action)
-            
+
+            report_action = QAction('Отчёт о системе')
+            report_action.triggered.connect(self._write_report)
+            menu.addAction(report_action)
+
             menu.addSeparator()
-            
-            exit_action = QAction("Выход")
+
+            exit_action = QAction('Выход')
             exit_action.triggered.connect(self._app.quit)
             menu.addAction(exit_action)
-            
+
             self._tray_icon.setContextMenu(menu)
             self._tray_icon.show()
-        
-        def _force_show_overlay(self) -> None:
-            """Force show overlay."""
-            self._update_overlay(force_show=True)
-        
+
+        def _write_report(self) -> None:
+            '''Пишет отчёт о системе и открывает папку с ним.'''
+            from .diagnostics import write_report
+            path = write_report()
+            log_message('Отчёт о системе создан: ' + str(path))
+            try:
+                os.startfile(str(path.parent))  # type: ignore[attr-defined]
+            except (OSError, AttributeError):
+                pass
+
         def _show_settings(self) -> None:
             """Show settings dialog."""
             dialog = SettingsDialog(self._settings)
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 changes = dialog.get_settings()
-                self._settings = Settings(
-                    language=self._settings.language,
-                    country=self._settings.country,
-                    overlay_opacity=changes['overlay_opacity'],
-                    overlay_scale=changes['overlay_scale'],
-                    show_fps=self._settings.show_fps,
-                    update_interval=self._settings.update_interval,
-                    launch_with_steam=changes['launch_with_steam'],
-                    currencies=tuple(changes['currencies']),
-                )
+                self._settings = apply_changes(self._settings, changes)
                 save_settings(self._settings)
-                self._window.setWindowOpacity(float(self._settings.overlay_opacity))
-                self.settings_changed.emit()
-        
-        def _load_games(self) -> None:
-            """Load installed games from Steam library."""
-            try:
-                root = find_steam_root()
-                if root is None:
-                    return
-                
-                roots: list[Path] = [root]
-                try:
-                    folders_file = steam_paths(root).libraryfolders_vdf
-                    if folders_file.is_file():
-                        text = folders_file.read_text(encoding='utf-8', errors='ignore')
-                        roots.extend(read_library_folders(text))
-                except OSError:
-                    pass
-                
-                # Remove duplicates
-                unique: list[Path] = []
-                for item in roots:
-                    if item not in unique:
-                        unique.append(item)
-                
-                # Load games
-                games = list(iter_library_games(unique))
-                self._games = {game.name.lower(): game.appid for game in games}
-                log_message(f"Загружено {len(self._games)} игр из библиотеки Steam")
-            except Exception as e:
-                log_message(f"Ошибка загрузки игр: {e}")
-                self._games = {}
-        
-        def _detect_appid(self, title: str) -> int | None:
-            """Detect game appid from window title."""
-            if not title:
-                return None
-            
-            # Try to extract appid directly from title
-            match = re.search(r'App (\d+)', title)
-            if match:
-                return int(match.group(1))
-            
-            # Match game name
-            if not self._games:
-                self._load_games()
-            
-            needle = title.lower()
-            best: tuple[int, int] | None = None
-            for name, appid in self._games.items():
-                if name and name in needle and (best is None or len(name) > best[0]):
-                    best = (len(name), appid)
-            
-            return best[1] if best else None
-        
-        def _get_cached_price(self, appid: int, country: str) -> Price | None:
-            """Get price from cache."""
-            return cached_price(self._cache, appid, country)
-        
-        def _fetch_prices(self, appid: int) -> dict[str, Price]:
-            """Fetch prices for a game."""
-            result: dict[str, Price] = {}
-            changed = False
-            
-            for code in watch_currencies(self._settings):
-                price = self._get_cached_price(appid, code)
-                
-                if price is None:
-                    try:
-                        country = CURRENCY_COUNTRIES.get(code, code.lower())
-                        price = fetch_price(appid, country)
-                        
-                        self._cache[code] = {
-                            'appid': appid,
-                            'time': int(time.time()),
-                            'price': price_to_dict(price),
-                        }
-                        changed = True
-                    except PriceError:
-                        continue
-                
-                result[code] = price
-            
-            if changed:
-                save_cache(self._cache_file, self._cache)
-            
-            return result
-        
-        def _format_price_lines(self, prices: dict[str, Price], game_name: str | None = None) -> list[str]:
-            """Format prices for display."""
-            return format_price_lines(prices, game_name)
-        
-        def _update_overlay(self, force_show: bool = False) -> None:
-            """Update overlay with current game prices."""
-            try:
-                # Rate limiting
-                now = time.time()
-                if not force_show and now - self._last_show_time < self._min_show_interval:
-                    return
-                self._last_show_time = now
-                
-                # Get foreground window info
-                info = foreground_window()
-                if info is None:
-                    self._window.hide()
-                    return
-                
-                hwnd, rect, title, class_name = info
-                
-                # Check if minimized
-                if is_minimized(hwnd):
-                    self._window.hide()
-                    return
-                
-                # Detect appid
-                appid = self._detect_appid(title)
-                game_name = title if title else None
-                
-                # If it's Steam main window, show hint
-                if class_name in STEAM_WINDOW_CLASSES and appid is None:
-                    lines = [
-                        "SteamPACC работает",
-                        "Наведите на игру, чтобы",
-                        "увидеть цены в разных валютах"
-                    ]
-                    self._window.set_lines(lines, "Steam")
-                    self._position_window(rect)
-                    self._window.show()
-                    return
-                
-                # If no appid detected, hide overlay
-                if appid is None and not force_show:
-                    self._window.hide()
-                    return
-                
-                # Fetch and display prices
-                prices = self._fetch_prices(appid) if appid else {}
-                lines = self._format_price_lines(prices, game_name)
-                
-                self._window.set_lines(lines, game_name)
-                self._position_window(rect)
-                self._window.show()
-                self._window.raise_()
-                
-            except Exception as e:
-                log_exception(f"Ошибка обновления оверлея: {e}")
-                self._window.hide()
-        
-        def _position_window(self, steam_rect: tuple[int, int, int, int]) -> None:
-            """Position overlay window relative to Steam window."""
-            x, y = overlay_position(steam_rect, self._window.sizeHint())
-            size = self._window.sizeHint()
-            self._window.resize(size)
-            self._window.move(x, y)
-        
+                self._window.apply_settings(self._settings)
+                autostart.set_enabled(self._settings.launch_with_steam)
+                # Новые валюты могли появиться: обновляем показ.
+                if self._shown_appid is not None:
+                    self._request_prices(self._shown_appid)
+                self._update_overlay(force_show=True)
+
         def start(self) -> None:
             """Start the controller."""
-            # Load games
-            self._load_games()
-            
-            # Initial update
+            if self._settings.launch_with_steam:
+                # Обновляем путь автозапуска: программа могла переехать.
+                autostart.set_enabled(True)
             self._update_overlay()
-        
+
         def stop(self) -> None:
             """Stop the controller."""
             self._timer.stop()
-            if self._window:
-                self._window.hide()
+            self._stop_event.set()
+            self._window.hide()
 
 
 # =============================================================================
@@ -815,29 +1043,30 @@ def smoke_test() -> int:
     if not QT_AVAILABLE:
         log_message('Тест дымом: PySide6 недоступен')
         return 1
-    
+
     try:
         win_api.set_dpi_awareness()
         application = QApplication(sys.argv)
         application.setQuitOnLastWindowClosed(False)
-        
+
         controller = AppController(application)
         log_message('Тест дымом: контроллер создан')
-        
+
         QTimer.singleShot(2000, application.quit)
         result = int(application.exec())
+        controller.stop()
         log_message('Тест дымом: графическая часть работает')
         return result
     except Exception as error:
         log_exception('Тест дымом: ошибка графической части')
-        show_error('SteamPACC - ошибка', f'Ошибка теста: {error}')
+        show_error('SteamPACC - ошибка', 'Ошибка теста: ' + str(error))
         return 1
 
 
 def run() -> int:
     """Run the main application."""
-    log_message('Запуск SteamPACC, версия ' + app_version())
-    
+    log_message('Запуск SteamPACC, версия ' + str(app_version))
+
     if not QT_AVAILABLE:
         log_message('PySide6 недоступен: графическая часть не будет работать')
         show_error(
@@ -847,27 +1076,29 @@ def run() -> int:
             'Команда: pip install PySide6'
         )
         return 1
-    
+
     try:
         # Check single instance
         if not claim_single_instance():
             log_message('SteamPACC уже запущен: второй экземпляр завершает работу')
             return 0
-        
+
         # Set DPI awareness
         win_api.set_dpi_awareness()
-        
+
         # Create application
         application = QApplication(sys.argv)
         application.setQuitOnLastWindowClosed(False)
-        application.setApplicationName("SteamPACC")
-        
+        application.setApplicationName('SteamPACC')
+
         # Create and start controller
         controller = AppController(application)
         controller.start()
-        
-        return int(application.exec())
-        
+
+        result = int(application.exec())
+        controller.stop()
+        return result
+
     except Exception as error:
         log_exception('Ошибка при запуске приложения')
         show_error(

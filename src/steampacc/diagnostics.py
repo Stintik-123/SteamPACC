@@ -142,19 +142,27 @@ def _show_dialog(title: str, text: str, icon: int, blocking: bool) -> bool:
 
 
 def configure_console() -> None:
-    '''Настраивает кодировку консоли, чтобы русский текст печатался без ошибок.
+    '''Настраивает консоль, чтобы русский текст печатался без ошибок.
 
-    В системной консоли Windows по умолчанию кодировка cp1252: обычный
-    print русским текстом на ней завершается ошибкой UnicodeEncodeError,
-    и программа падает вместо того, чтобы показать сообщение. Здесь потоки
-    настраиваются на замену непечатаемых символов.
+    В консоли Windows по умолчанию кодировка cp866 или cp1251, а Python
+    печатает в ней кракозябры. Здесь включается кодовая страница UTF-8
+    (65001) и потоки переводятся на UTF-8 с заменой непечатаемых
+    символов: вывод читается и в cmd, и в PowerShell, и в Git Bash.
     '''
+    if os.name == 'nt':
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleOutputCP(65001)
+            kernel32.SetConsoleCP(65001)
+        except (AttributeError, OSError):
+            pass
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, 'reconfigure', None)
         if reconfigure is None:
             continue
         try:
-            reconfigure(errors='replace')
+            reconfigure(encoding='utf-8', errors='replace')
         except (OSError, ValueError):
             pass
 

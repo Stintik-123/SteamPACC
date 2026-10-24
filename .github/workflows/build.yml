@@ -146,7 +146,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/SteamPACC-Setup-*.exe --generate-notes --title "${{ github.ref_name }}" --verify-tag
+          # В релиз попадают установщик и портативная версия: портативную
+          # скачивает installer/install.ps1 при установке одной командой.
+          gh release create "${{ github.ref_name }}" dist/SteamPACC-Setup-*.exe dist/SteamPACC.exe --generate-notes --title "${{ github.ref_name }}" --verify-tag
 
       - name: "Проверка установщика: установка, автозапуск, удаление"
         shell: bash

@@ -13,8 +13,10 @@ from steampacc.app import (
     panel_size,
     price_to_dict,
     save_cache,
+    store_price,
     watch_currencies,
 )
+from steampacc.library import InstalledGame
 from steampacc.config import Settings
 from steampacc.prices import Price
 
@@ -100,8 +102,9 @@ def test_format_price_lines_without_data() -> None:
 def test_cache_round_trip(tmp_path: Path) -> None:
     '''Кэш цен сохраняется и читается обратно.'''
     path = tmp_path / 'prices.json'
-    assert save_cache(path, {'ru': {'appid': 440}})
-    assert load_cache(path) == {'ru': {'appid': 440}}
+    data = {'440': {'RUB': {'appid': 440, 'time': 1}}}
+    assert save_cache(path, data)
+    assert load_cache(path) == data
 
 
 def test_load_cache_survives_broken_file(tmp_path: Path) -> None:
@@ -111,11 +114,20 @@ def test_load_cache_survives_broken_file(tmp_path: Path) -> None:
     assert load_cache(path) == {}
 
 
+def test_load_cache_migrates_old_format(tmp_path: Path) -> None:
+    '''Кэш старого формата (по валютам) переносится в новый (по играм).'''
+    path = tmp_path / 'prices.json'
+    path.write_text('{"ru": {"appid": 440, "time": 5, "price": {"appid": 440}}}', encoding='utf-8')
+    assert load_cache(path) == {
+        '440': {'ru': {'time': 5, 'price': {'appid': 440}}},
+    }
+
+
 def test_cached_price_returns_fresh_entry() -> None:
     '''Свежая запись кэша возвращает цену.'''
     price = _price()
-    cache = {'ru': {'appid': 440, 'time': int(time.time()), 'price': price_to_dict(price)}}
-    result = cached_price(cache, 440, 'ru')
+    cache = {'440': {'RUB': {'time': int(time.time()), 'price': price_to_dict(price)}}}
+    result = cached_price(cache, 440, 'RUB')
     assert result is not None
     assert result.final == 12900
     assert result.discount_percent == 35
@@ -124,15 +136,97 @@ def test_cached_price_returns_fresh_entry() -> None:
 def test_cached_price_ignores_old_entry() -> None:
     '''Старая запись кэша не используется.'''
     price = _price()
-    cache = {'ru': {'appid': 440, 'time': 0, 'price': price_to_dict(price)}}
-    assert cached_price(cache, 440, 'ru') is None
+    cache = {'440': {'RUB': {'time': 0, 'price': price_to_dict(price)}}}
+    assert cached_price(cache, 440, 'RUB') is None
 
 
 def test_cached_price_ignores_other_appid() -> None:
-    '''Запись другой игры не используется.'''
+    '''Запись другой игры не используется: ключ кэша — appid.'''
     price = _price()
-    cache = {'ru': {'appid': 999, 'time': int(time.time()), 'price': price_to_dict(price)}}
-    assert cached_price(cache, 440, 'ru') is None
+    cache = {'999': {'RUB': {'time': int(time.time()), 'price': price_to_dict(price)}}}
+    assert cached_price(cache, 440, 'RUB') is None
+
+
+def test_store_price_keeps_games_apart() -> None:
+    '''Цены двух игр в одной валюте не затирают друг друга.'''
+    cache: dict = {}
+    store_price(cache, 440, 'RUB', _price(440))
+    store_price(cache, 570, 'RUB', _price(570))
+    assert cached_price(cache, 440, 'RUB') is not None
+    assert cached_price(cache, 570, 'RUB') is not None
+
+
+def test_build_exe_map_matches_executables(tmp_path: Path) -> None:
+    '''Имена исполняемых файлов игр сопоставляются с appid.'''
+    from steampacc.app import build_exe_map
+
+    folder_a = tmp_path / 'game_a'
+    folder_b = tmp_path / 'game_b'
+    (folder_a / 'steamapps' / 'common').mkdir(parents=True)
+    folder_b.mkdir()
+    (folder_a / 'steamapps' / 'common' / 'GameA.exe').write_text('a')
+    (folder_b / 'launcher.exe').write_text('b')
+
+    def make(appid: int, install_dir: Path) -> InstalledGame:
+        return InstalledGame(
+            appid=appid,
+            name='Игра ' + str(appid),
+            install_dir=install_dir,
+            library_root=tmp_path,
+            size_on_disk=0,
+            last_updated=0,
+            manifest_path=tmp_path / 'manifest.acf',
+        )
+
+    games = [
+        make(440, folder_a / 'steamapps' / 'common' / 'GameA'),
+        make(570, folder_b),
+    ]
+    # Каталог первой игры не существует: её exe не попадает в карту.
+    result = build_exe_map(games)
+    assert result == {'launcher.exe': 570}
+
+
+def test_game_by_title_picks_longest_match() -> None:
+    '''Из нескольких совпадений выбирается самое длинное имя игры.'''
+    from steampacc.app import game_by_title
+
+    names = {'dota': 1, 'dota 2': 2, 'team fortress': 3}
+    assert game_by_title('Dota 2 - Main Menu', names) == 2
+    assert game_by_title('Team Fortress Classics', names) == 3
+
+
+def test_game_by_title_skips_short_names() -> None:
+    '''Короткие имена не дают ложных срабатываний.'''
+    from steampacc.app import game_by_title
+
+    assert game_by_title('Подготовка Windows', {'go': 1, ' Windows': 2}) is None
+
+
+def test_is_steam_window_by_sdl_title() -> None:
+    '''Окно SDL_app с заголовком Steam — это клиент Steam.'''
+    from steampacc.app import is_steam_window
+
+    assert is_steam_window('SDL_app', 'Steam') is True
+    assert is_steam_window('sdl_app', 'steam ') is True
+
+
+def test_is_steam_window_rejects_sdl_game() -> None:
+    '''Окно SDL_app без заголовка Steam и без hwnd — не Steam.'''
+    from steampacc.app import is_steam_window
+
+    assert is_steam_window('SDL_app', 'SuperTuxKart') is False
+    assert is_steam_window('SDL_app', '') is False
+
+
+def test_is_steam_window_by_known_classes() -> None:
+    '''Классы старого клиента распознаются без учёта регистра.'''
+    from steampacc.app import is_steam_window
+
+    assert is_steam_window('SteamMainWindow', '') is True
+    assert is_steam_window('vguiPopupWindow', '') is True
+    assert is_steam_window('Notepad', 'Steam') is False
+    assert is_steam_window('', '') is False
 
 
 def test_watch_currencies_uses_settings() -> None:

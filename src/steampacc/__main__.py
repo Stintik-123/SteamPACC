@@ -1,16 +1,22 @@
 """Точка входа SteamPACC.
 
 Запуск программы: ``python -m steampacc``.
-В сборанном виде это SteamPACC.exe, который запускает этот код.
+В собранном виде это SteamPACC.exe, который запускает этот код.
 
-Модуль настраивает консоль и обрабатывает аргументы командной строки.
+Модуль настраивает консоль, разбирает аргументы командной строки и
+маршрутизирует консольные команды.
 
-Ключи запуска:
+Ключи и команды запуска:
 
-* ``--version`` - напечатать версию и выйти;
-* ``--selftest`` - создать отчёт о системе и выйти;
-* ``--smoke`` - проверить, что графическая часть работает;
-* ``--autostart`` - флаг, что запуск из автозагрузки Windows.
+* ``--version`` — напечатать версию и выйти;
+* ``--selftest`` — создать отчёт о системе и выйти;
+* ``--smoke`` — проверить, что графическая часть работает;
+* ``--autostart`` — флаг запуска из автозагрузки Windows;
+* ``games`` — список установленных игр (без графики);
+* ``price <appid|имя>`` — цены игры в разных валютах (без графики);
+* ``help`` — справка по консольным командам.
+
+Без аргументов запускается графический режим: оверлей и значок в трее.
 """
 
 from __future__ import annotations
@@ -29,6 +35,9 @@ SMOKE_FLAG = '--smoke'
 
 #: Ключ запуска: автозапуск из Windows.
 AUTOSTART_FLAG = '--autostart'
+
+#: Консольные команды, которые работают без графики.
+CONSOLE_COMMANDS = ('games', 'price', 'help')
 
 
 def _prepare_console() -> None:
@@ -61,7 +70,7 @@ def _log_path() -> str:
 def _show_fatal(text: str) -> None:
     """Показывает фатальную ошибку пользователю и пишет в журнал."""
     try:
-        from steampacc.diagnostics import log_exception, safe_print, show_error
+        from steampacc.diagnostics import log_exception, show_error
         log_exception('Критическая ошибка запуска')
         show_error('SteamPACC - ошибка', text)
     except Exception:
@@ -95,15 +104,22 @@ def _run_smoke() -> int:
     return int(smoke_test())
 
 
+def _run_console(args: list[str]) -> int:
+    """Запускает консольную команду без графики."""
+    from steampacc.cli import main as cli_main
+    return int(cli_main(args))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Запускает программу и возвращает код выхода.
-    
-    Запускает графический интерфейс, если не переданы специальные ключи.
+
+    Графический интерфейс запускается, если не переданы служебные
+    ключи или консольные команды.
     """
     args = list(argv) if argv is not None else list(sys.argv[1:])
     _prepare_console()
     _log_start()
-    
+
     try:
         if VERSION_FLAG in args:
             return _run_version()
@@ -111,11 +127,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_selftest()
         if SMOKE_FLAG in args:
             return _run_smoke()
-        
-        # Normal launch
+
+        # Консольные команды работают без PySide6 и без окон.
+        if args and args[0].strip().lower() in CONSOLE_COMMANDS:
+            return _run_console(args)
+
+        # Обычный запуск: оверлей и значок в трее.
         from steampacc.app import run
         return int(run())
-        
+
     except ImportError as error:
         _show_fatal(
             'Не удалось загрузить графическую библиотеку: ' + str(error) + chr(10) +
