@@ -47,6 +47,7 @@ try:
         QGroupBox,
         QHBoxLayout,
         QMenu,
+        QMessageBox,
         QPushButton,
         QSystemTrayIcon,
         QVBoxLayout,
@@ -208,6 +209,33 @@ if QT_AVAILABLE:
 
             self._tray_icon = None
             self._setup_tray()
+            self._tray_icon.activated.connect(self._on_tray_activated)
+
+        def _offer_steam_restart(self) -> None:
+            '''Понятное окно с кнопкой: Steam без интеграции, перезапустить?'''
+            if self._integrator is None or not self._settings.integration_enabled:
+                return
+            from . import cef as cef_module
+            if cef_module.debug_available():
+                return
+            box = QMessageBox()
+            box.setWindowTitle('SteamPACC — включение цен')
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText(
+                'Цены в магазине отключены, потому что Steam запущен без интеграции.\n\n'
+                'Нажмите кнопку ниже — программа сама перезапустит Steam (~20 секунд), '
+                'и цены других регионов появятся на страницах игр в магазине.')
+            restart = box.addButton(
+                'Перезапустить Steam сейчас', QMessageBox.ButtonRole.AcceptRole)
+            box.addButton('Позже', QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is restart:
+                self._restart_steam()
+
+        def _on_tray_activated(self, reason) -> None:
+            '''Левый клик по значку: то же окно включения цен.'''
+            if reason == QSystemTrayIcon.ActivationReason.Trigger:
+                self._offer_steam_restart()
 
         def _make_icon(self) -> QIcon:
             '''Значок трея: файл из ресурсов, иначе простая окружность.'''
@@ -232,28 +260,30 @@ if QT_AVAILABLE:
             self._tray_icon.setIcon(self._make_icon())
             self._tray_icon.setToolTip('SteamPACC — цены игр в разных валютах')
 
-            menu = QMenu()
+            # Ссылка обязательна: без неё PySide6 удаляет меню сразу после
+            # настройки, и клики по значку перестают работать.
+            self._menu = QMenu()
 
             if self._integrator is not None:
                 restart_action = QAction('Перезапустить Steam с ценами')
                 restart_action.triggered.connect(self._restart_steam)
-                menu.addAction(restart_action)
+                self._menu.addAction(restart_action)
 
             settings_action = QAction('Настройки')
             settings_action.triggered.connect(self._show_settings)
-            menu.addAction(settings_action)
+            self._menu.addAction(settings_action)
 
             report_action = QAction('Отчёт о системе')
             report_action.triggered.connect(self._write_report)
-            menu.addAction(report_action)
+            self._menu.addAction(report_action)
 
-            menu.addSeparator()
+            self._menu.addSeparator()
 
             exit_action = QAction('Выход')
             exit_action.triggered.connect(self._app.quit)
-            menu.addAction(exit_action)
+            self._menu.addAction(exit_action)
 
-            self._tray_icon.setContextMenu(menu)
+            self._tray_icon.setContextMenu(self._menu)
             self._tray_icon.show()
 
         def _on_page_currencies(self, currencies: list) -> None:
@@ -369,6 +399,12 @@ def run() -> int:
     try:
         if not claim_single_instance():
             log_message('SteamPACC уже запущен: второй экземпляр завершает работу')
+            show_error(
+                'SteamPACC',
+                'SteamPACC уже запущен: значок в трее рядом с часами'
+                + chr(10) + '(в Windows 11 может прятаться под стрелкой ^).'
+                + chr(10) + 'Если значок не реагирует — завершите SteamPACC.exe'
+                + chr(10) + 'в Диспетчере задач (Ctrl+Shift+Esc) и запустите заново.')
             return 0
 
         win_api.set_dpi_awareness()
