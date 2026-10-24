@@ -44,6 +44,8 @@ class Settings:
     update_interval: int = 60
     launch_with_steam: bool = False
     currencies: tuple[str, ...] = ('RUB', 'USD', 'EUR')
+    #: Внедрение цен в страницы магазина клиентa Steam (DevTools).
+    integration_enabled: bool = True
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -135,6 +137,7 @@ def _from_mapping(data: dict) -> Settings:
             _as_int(data.get('update_interval'), base.update_interval), MIN_INTERVAL, MAX_INTERVAL)),
         launch_with_steam=_as_bool(data.get('launch_with_steam'), base.launch_with_steam),
         currencies=_as_str_list(data.get('currencies'), base.currencies),
+        integration_enabled=_as_bool(data.get('integration_enabled'), base.integration_enabled),
     )
 
 
@@ -167,6 +170,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         'update_interval': settings.update_interval,
         'launch_with_steam': settings.launch_with_steam,
         'currencies': list(settings.currencies),
+        'integration_enabled': settings.integration_enabled,
     }
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     return target
@@ -183,6 +187,7 @@ def apply_changes(settings: Settings, changes: dict) -> Settings:
         'update_interval': settings.update_interval,
         'launch_with_steam': settings.launch_with_steam,
         'currencies': list(settings.currencies),
+        'integration_enabled': settings.integration_enabled,
     }
     merged.update(changes)
     return _from_mapping(merged)

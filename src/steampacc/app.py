@@ -50,6 +50,12 @@ from .steam_paths import find_steam_root, steam_paths
 from .library import InstalledGame, iter_library_games, read_library_folders
 
 try:
+    from .steam_integration import SteamIntegrator
+    INTEGRATION_AVAILABLE = True
+except ImportError:
+    INTEGRATION_AVAILABLE = False
+
+try:
     from PySide6.QtCore import QSize, QTimer, Qt, Signal, QObject
     from PySide6.QtGui import (
         QAction, QBrush, QColor, QFont, QFontMetrics, QIcon, QLinearGradient,
@@ -608,6 +614,11 @@ if QT_AVAILABLE:
             behavior_group = QGroupBox('Поведение')
             behavior_layout = QVBoxLayout()
 
+            self.integration_check = QCheckBox(
+                'Цены прямо в магазине Steam (нужен перезапуск Steam с ценами)')
+            self.integration_check.setChecked(settings.integration_enabled)
+            behavior_layout.addWidget(self.integration_check)
+
             self.autostart_check = QCheckBox('Запускать вместе с Windows')
             self.autostart_check.setChecked(settings.launch_with_steam)
             behavior_layout.addWidget(self.autostart_check)
@@ -640,6 +651,7 @@ if QT_AVAILABLE:
                 'overlay_opacity': self.opacity_spin.value(),
                 'overlay_scale': self.scale_spin.value(),
                 'launch_with_steam': self.autostart_check.isChecked(),
+                'integration_enabled': self.integration_check.isChecked(),
             }
 
 
@@ -679,6 +691,18 @@ if QT_AVAILABLE:
             self._fail_times: dict[int, float] = {}
 
             self._window = NativeOverlayWindow(self._settings)
+
+            # Интеграция с магазином Steam: цены прямо в карточках покупки.
+            self._integrator = None
+            if INTEGRATION_AVAILABLE:
+                try:
+                    self._integrator = SteamIntegrator(self)
+                    self._integrator.status_changed.connect(log_message)
+                    self._integrator.page_currencies_received.connect(self._on_page_currencies)
+                    self._integrator.set_enabled(self._settings.integration_enabled)
+                    self._integrator.set_currencies(watch_currencies(self._settings))
+                except Exception as error:
+                    log_exception('Интеграция с магазином не запустилась: ' + str(error))
 
             self._tray_icon = None
             self._setup_tray()
@@ -861,17 +885,21 @@ if QT_AVAILABLE:
                 is_steam = is_steam_window(class_name, title, hwnd)
 
                 if is_steam:
-                    # Steam сам в фокусе: показываем цены последней игры.
+                    # Steam сам в фокусе: цены уже внедрены в страницы
+                    # магазина, оверлей только мешает. Показываем что-то
+                    # только по явной просьбе (значок в трее).
+                    if not force_show:
+                        self._hide_overlay()
+                        return
                     if self._last_appid is not None:
                         appid = self._last_appid
                         name = self._last_name
                         prices = self._prices_from_cache(appid)
-                        self._request_prices(appid)
                     else:
                         lines = [
                             'SteamPACC работает',
-                            'Запустите игру — и её цены',
-                            'появятся в разных валютах',
+                            'Цены видны прямо в магазине;',
+                            'этот оверлей — для окон игр',
                         ]
                         self._window.set_lines(lines, 'SteamPACC')
                         self._position_window(rect)
@@ -943,6 +971,11 @@ if QT_AVAILABLE:
             settings_action.triggered.connect(self._show_settings)
             menu.addAction(settings_action)
 
+            if self._integrator is not None:
+                restart_action = QAction('Перезапустить Steam с ценами')
+                restart_action.triggered.connect(self._restart_steam)
+                menu.addAction(restart_action)
+
             report_action = QAction('Отчёт о системе')
             report_action.triggered.connect(self._write_report)
             menu.addAction(report_action)
@@ -955,6 +988,29 @@ if QT_AVAILABLE:
 
             self._tray_icon.setContextMenu(menu)
             self._tray_icon.show()
+
+        def _on_page_currencies(self, currencies: list) -> None:
+            '''Выбор регионов, отмеченный в панели настроек внутри Steam.'''
+            self._settings = apply_changes(self._settings, {'currencies': list(currencies)})
+            save_settings(self._settings)
+            log_message('Регионы изменены в окне Steam: ' + ', '.join(currencies))
+
+        def _restart_steam(self) -> None:
+            '''Перезапускает Steam с отладочным портом, чтобы цены появились в магазине.'''
+            if self._integrator is None:
+                return
+            root = find_steam_root()
+            if root is None:
+                show_error('SteamPACC', 'Не найден каталог Steam.')
+                return
+            steam_exe = Path(root) / 'steam.exe'
+            if not steam_exe.is_file():
+                show_error('SteamPACC', 'Файл steam.exe не найден: ' + str(steam_exe))
+                return
+            self._tray_icon.showMessage(
+                'SteamPACC', 'Перезапускаю Steam с ценами в магазине…',
+                QSystemTrayIcon.MessageIcon.Information, 4000)
+            self._integrator.restart_steam_with_debug(str(steam_exe))
 
         def _write_report(self) -> None:
             '''Пишет отчёт о системе и открывает папку с ним.'''
@@ -975,6 +1031,9 @@ if QT_AVAILABLE:
                 save_settings(self._settings)
                 self._window.apply_settings(self._settings)
                 autostart.set_enabled(self._settings.launch_with_steam)
+                if self._integrator is not None:
+                    self._integrator.set_enabled(self._settings.integration_enabled)
+                    self._integrator.set_currencies(watch_currencies(self._settings))
                 # Новые валюты могли появиться: обновляем показ.
                 if self._shown_appid is not None:
                     self._request_prices(self._shown_appid)
@@ -985,11 +1044,22 @@ if QT_AVAILABLE:
             if self._settings.launch_with_steam:
                 # Обновляем путь автозапуска: программа могла переехать.
                 autostart.set_enabled(True)
+            if self._integrator is not None and self._settings.integration_enabled:
+                from . import cef as cef_module
+                if not cef_module.debug_available():
+                    self._tray_icon.showMessage(
+                        'SteamPACC',
+                        'Цены в магазине включены. Steam запущен без отладки — '
+                        'нажмите правой кнопкой по значку и выберите '
+                        '«Перезапустить Steam с ценами».',
+                        QSystemTrayIcon.MessageIcon.Information, 8000)
             self._update_overlay()
 
         def stop(self) -> None:
             """Stop the controller."""
             self._timer.stop()
+            if self._integrator is not None:
+                self._integrator.set_enabled(False)
             self._stop_event.set()
             self._window.hide()
 

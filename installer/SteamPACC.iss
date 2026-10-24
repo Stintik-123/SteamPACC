@@ -3,10 +3,10 @@
 ;
 ; Версию установщика можно задать при сборке, чтобы она совпадала
 ; с версией программы из src/steampacc/__init__.py:
-;     ISCC /DMyAppVersion=0.2.0 installer\SteamPACC.iss
+;     ISCC /DMyAppVersion=1.0.0 installer\SteamPACC.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "1.0.0"
 #endif
 #define MyAppName "SteamPACC"
 #define MyAppPublisher "Stintik-123"
