@@ -57,8 +57,10 @@ def set_enabled(enabled: bool) -> bool:
     if winreg is None:
         return False
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+        # CreateKey открывает существующую ветку или создаёт её: у
+        # свежего профиля пользователя ветки автозапуска может не быть.
+        with winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER, RUN_KEY
         ) as key:
             if enabled:
                 winreg.SetValueEx(key, VALUE_NAME, 0, winreg.REG_SZ, _command())
