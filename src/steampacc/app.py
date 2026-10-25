@@ -46,8 +46,9 @@ try:
         QGridLayout,
         QGroupBox,
         QHBoxLayout,
+        QLabel,
         QMenu,
-        QMessageBox,
+
         QPushButton,
         QSystemTrayIcon,
         QVBoxLayout,
@@ -123,36 +124,67 @@ def is_autostart_launch(arguments: list[str] | None = None) -> bool:
 # Qt: настройки и контроллер
 # =============================================================================
 
-if QT_AVAILABLE:
-    class SettingsDialog(QDialog):
-        """Окно настроек: регионы цен, интеграция, автозапуск."""
+#: Палитры тем окна: тёмная в стиле Steam и светлая.
+THEMES: dict[str, dict[str, str]] = {
+    'dark': {
+        'bg': '#1b2838', 'text': '#c6d4df', 'border': '#2a475e',
+        'ok': '#3fbf6f', 'warn': '#66c0f4',
+    },
+    'light': {
+        'bg': '#f5f7fa', 'text': '#1b2838', 'border': '#c8d4e0',
+        'ok': '#1f8f4f', 'warn': '#1a6fb0',
+    },
+}
 
-        def __init__(self, settings: Settings, parent: QWidget | None = None):
+
+if QT_AVAILABLE:
+    class MainWindow(QDialog):
+        """Главное окно: статус интеграции, регионы цен, автозапуск.
+
+        Программа открывается как обычное приложение с окном; закрытие
+        окна сворачивает её в трей, полный выход — через «Выход».
+        """
+
+        def __init__(self, controller: 'AppController', parent: QWidget | None = None):
             super().__init__(parent)
-            self._settings = settings
-            self.setWindowTitle('SteamPACC — Настройки')
-            self.setMinimumWidth(480)
+            self._controller = controller
+            self.setWindowTitle('SteamPACC — цены игр в магазине Steam')
+            self.setMinimumWidth(520)
 
             layout = QVBoxLayout()
 
-            currency_group = QGroupBox('Валюты для показа')
+            # Статус интеграции и кнопка перезапуска Steam.
+            self.status_label = QLabel()
+            self.status_label.setWordWrap(True)
+            layout.addWidget(self.status_label)
+
+            self.restart_btn = QPushButton('Перезапустить Steam с ценами')
+            self.restart_btn.clicked.connect(controller._restart_steam)
+            layout.addWidget(self.restart_btn)
+
+            # Ретионы цен.
+            currency_group = QGroupBox('Регионы цен для показа')
             currency_grid = QGridLayout()
+            settings = controller.settings
             current = {code.upper() for code in settings.currencies}
             self.currency_checks: dict[str, QCheckBox] = {}
             for index, code in enumerate(sorted(CURRENCY_SYMBOLS)):
-                symbol = CURRENCY_SYMBOLS[code]
-                box = QCheckBox(code + '  ' + symbol)
+                box = QCheckBox(code + '  ' + CURRENCY_SYMBOLS[code])
                 box.setChecked(code in current)
                 self.currency_checks[code] = box
                 currency_grid.addWidget(box, index // 4, index % 4)
             currency_group.setLayout(currency_grid)
             layout.addWidget(currency_group)
 
-            behavior_group = QGroupBox('Поведение')
+            # Вид и поведение.
+            behavior_group = QGroupBox('Вид и поведение')
             behavior_layout = QVBoxLayout()
 
-            self.integration_check = QCheckBox(
-                'Цены прямо в магазине Steam (нужен перезапуск Steam с ценами)')
+            self.light_theme_check = QCheckBox('Светлая тема')
+            self.light_theme_check.setChecked(settings.theme == 'light')
+            behavior_layout.addWidget(self.light_theme_check)
+
+            self.integration_check = QCheckBox('Показывать цены в магазине Steam')
             self.integration_check.setChecked(settings.integration_enabled)
             behavior_layout.addWidget(self.integration_check)
 
@@ -163,30 +195,93 @@ if QT_AVAILABLE:
             behavior_group.setLayout(behavior_layout)
             layout.addWidget(behavior_group)
 
+            # Кнопки.
             button_layout = QHBoxLayout()
-            button_layout.addStretch()
+            apply_btn = QPushButton('Применить')
+            apply_btn.clicked.connect(self._apply)
+            button_layout.addWidget(apply_btn)
 
-            save_btn = QPushButton('Сохранить')
-            save_btn.clicked.connect(self.accept)
-            button_layout.addWidget(save_btn)
+            hide_btn = QPushButton('Свернуть в трей')
+            hide_btn.clicked.connect(self.hide)
+            button_layout.addWidget(hide_btn)
 
-            cancel_btn = QPushButton('Отмена')
-            cancel_btn.clicked.connect(self.reject)
-            button_layout.addWidget(cancel_btn)
+            exit_btn = QPushButton('Выход')
+            exit_btn.clicked.connect(QApplication.instance().quit)
+            button_layout.addWidget(exit_btn)
 
             layout.addLayout(button_layout)
             self.setLayout(layout)
+            self.apply_theme()
 
-        def get_settings(self) -> dict:
-            """Собирает изменённые настройки."""
+            # Статус обновляется сам: Steam могли перезапустить в любой момент.
+            self._status_timer = QTimer(self)
+            self._status_timer.timeout.connect(self.refresh_status)
+            self._status_timer.start(3000)
+            self.refresh_status()
+
+        def _theme(self) -> dict[str, str]:
+            '''Палитра текущей темы.'''
+            name = 'light' if self.light_theme_check.isChecked() else 'dark'
+            return THEMES.get(name, THEMES['dark'])
+
+        def apply_theme(self) -> None:
+            '''Красит окно по текущей теме.'''
+            t = self._theme()
+            self.setStyleSheet(
+                'QDialog {{ background-color: {bg}; color: {text}; }}'
+                'QGroupBox {{ border: 1px solid {border}; border-radius: 4px;'
+                ' margin-top: 10px; padding-top: 6px; }}'
+                'QGroupBox::title {{ color: {text}; }}'
+                'QCheckBox {{ color: {text}; }}'
+                'QPushButton {{ background-color: {border}; color: {text};'
+                ' padding: 6px 14px; border-radius: 3px; }}'
+                .format(**t))
+            self.restart_btn.setStyleSheet(
+                'background-color: #66c0f4; color: #1b2838; font-size: 14px;'
+                ' padding: 8px; border-radius: 3px;')
+            self.refresh_status()
+
+        def refresh_status(self) -> None:
+            '''Обновляет строку состояния и видимость кнопки перезапуска.'''
+            from . import cef as cef_module
+            t = self._theme()
+            if not self._controller.settings.integration_enabled:
+                self.status_label.setText('Цены в магазине выключены (галочка ниже).')
+                self.status_label.setStyleSheet('font-size: 14px; color: %s;' % t['text'])
+                self.restart_btn.setVisible(False)
+                return
+            if cef_module.debug_available():
+                self.status_label.setText(
+                    'Всё работает: цены регионов видны на страницах игр\n'
+                    'в магазине Steam. Настройки регионов — тоже в самом Steam:\n'
+                    'Steam → Настройки → SteamPACC.')
+                self.status_label.setStyleSheet('font-size: 14px; color: %s;' % t['ok'])
+                self.restart_btn.setVisible(False)
+            else:
+                self.status_label.setText(
+                    'Steam запущен без интеграции — цены в магазине не показываются.\n'
+                    'Нажмите кнопку ниже: программа перезапустит Steam (~20 секунд).')
+                self.status_label.setStyleSheet('font-size: 14px; color: %s;' % t['warn'])
+                self.restart_btn.setVisible(True)
+
+        def _apply(self) -> None:
+            '''Применяет регионы, тему и галочки поведения.'''
             currencies = [
                 code for code, box in self.currency_checks.items() if box.isChecked()
             ]
-            return {
+            self._controller.apply_changes({
                 'currencies': currencies or ['RUB', 'USD', 'EUR'],
                 'launch_with_steam': self.autostart_check.isChecked(),
                 'integration_enabled': self.integration_check.isChecked(),
-            }
+                'theme': 'light' if self.light_theme_check.isChecked() else 'dark',
+            })
+            self.apply_theme()
+
+        def closeEvent(self, event) -> None:
+            '''Закрытие окна сворачивает программу в трей, а не завершает.'''
+            event.ignore()
+            self.hide()
+            self._controller.notify_hidden_to_tray()
 
     class AppController(QObject):
         """Контроллер: значок в трее и интеграция с магазином Steam."""
@@ -208,34 +303,46 @@ if QT_AVAILABLE:
                     log_exception('Интеграция с магазином не запустилась: ' + str(error))
 
             self._tray_icon = None
+            self._window = MainWindow(self)
+            self._tray_tip_shown = False
             self._setup_tray()
             self._tray_icon.activated.connect(self._on_tray_activated)
 
-        def _offer_steam_restart(self) -> None:
-            '''Понятное окно с кнопкой: Steam без интеграции, перезапустить?'''
-            if self._integrator is None or not self._settings.integration_enabled:
+        @property
+        def settings(self) -> Settings:
+            '''Текущие настройки.'''
+            return self._settings
+
+        def open_window(self) -> None:
+            '''Показывает главное окно поверх остальных.'''
+            self._window.refresh_status()
+            self._window.show()
+            self._window.raise_()
+            self._window.activateWindow()
+
+        def notify_hidden_to_tray(self) -> None:
+            '''Подсказка при первом сворачивании окна в трей.'''
+            if self._tray_tip_shown:
                 return
-            from . import cef as cef_module
-            if cef_module.debug_available():
-                return
-            box = QMessageBox()
-            box.setWindowTitle('SteamPACC — включение цен')
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setText(
-                'Цены в магазине отключены, потому что Steam запущен без интеграции.\n\n'
-                'Нажмите кнопку ниже — программа сама перезапустит Steam (~20 секунд), '
-                'и цены других регионов появятся на страницах игр в магазине.')
-            restart = box.addButton(
-                'Перезапустить Steam сейчас', QMessageBox.ButtonRole.AcceptRole)
-            box.addButton('Позже', QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() is restart:
-                self._restart_steam()
+            self._tray_tip_shown = True
+            self._tray_icon.showMessage(
+                'SteamPACC', 'Программа продолжает работать в трее. '
+                'Полный выход — правый клик по значку → Выход.',
+                QSystemTrayIcon.MessageIcon.Information, 5000)
+
+        def apply_changes(self, changes: dict) -> None:
+            '''Применяет изменения настроек и сразу обновляет интеграцию.'''
+            self._settings = apply_changes(self._settings, changes)
+            save_settings(self._settings)
+            autostart.set_enabled(self._settings.launch_with_steam)
+            if self._integrator is not None:
+                self._integrator.set_enabled(self._settings.integration_enabled)
+                self._integrator.set_currencies(watch_currencies(self._settings))
 
         def _on_tray_activated(self, reason) -> None:
-            '''Левый клик по значку: то же окно включения цен.'''
+            '''Левый клик по значку открывает главное окно.'''
             if reason == QSystemTrayIcon.ActivationReason.Trigger:
-                self._offer_steam_restart()
+                self.open_window()
 
         def _make_icon(self) -> QIcon:
             '''Значок трея: файл из ресурсов, иначе простая окружность.'''
@@ -264,14 +371,14 @@ if QT_AVAILABLE:
             # настройки, и клики по значку перестают работать.
             self._menu = QMenu()
 
+            open_action = QAction('Открыть SteamPACC')
+            open_action.triggered.connect(self.open_window)
+            self._menu.addAction(open_action)
+
             if self._integrator is not None:
                 restart_action = QAction('Перезапустить Steam с ценами')
                 restart_action.triggered.connect(self._restart_steam)
                 self._menu.addAction(restart_action)
-
-            settings_action = QAction('Настройки')
-            settings_action.triggered.connect(self._show_settings)
-            self._menu.addAction(settings_action)
 
             report_action = QAction('Отчёт о системе')
             report_action.triggered.connect(self._write_report)
@@ -319,32 +426,14 @@ if QT_AVAILABLE:
             except (OSError, AttributeError):
                 pass
 
-        def _show_settings(self) -> None:
-            """Окно настроек."""
-            dialog = SettingsDialog(self._settings)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                changes = dialog.get_settings()
-                self._settings = apply_changes(self._settings, changes)
-                save_settings(self._settings)
-                autostart.set_enabled(self._settings.launch_with_steam)
-                if self._integrator is not None:
-                    self._integrator.set_enabled(self._settings.integration_enabled)
-                    self._integrator.set_currencies(watch_currencies(self._settings))
-
         def start(self) -> None:
             """Запуск контроллера."""
             if self._settings.launch_with_steam:
                 # Обновляем путь автозапуска: программа могла переехать.
                 autostart.set_enabled(True)
-            if self._integrator is not None and self._settings.integration_enabled:
-                from . import cef as cef_module
-                if not cef_module.debug_available():
-                    self._tray_icon.showMessage(
-                        'SteamPACC',
-                        'Цены в магазине включены. Steam запущен без отладки — '
-                        'нажмите правой кнопкой по значку и выберите '
-                        '«Перезапустить Steam с ценами».',
-                        QSystemTrayIcon.MessageIcon.Information, 8000)
+            # Обычный запуск открывает окно; автозапуск молча сидит в трее.
+            if not is_autostart_launch():
+                self.open_window()
 
         def stop(self) -> None:
             """Остановка контроллера."""

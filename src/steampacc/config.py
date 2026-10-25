@@ -46,6 +46,8 @@ class Settings:
     currencies: tuple[str, ...] = ('RUB', 'USD', 'EUR')
     #: Внедрение цен в страницы магазина клиентa Steam (DevTools).
     integration_enabled: bool = True
+    #: Тема окна: тёмная или светлая.
+    theme: str = 'dark'
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -138,6 +140,7 @@ def _from_mapping(data: dict) -> Settings:
         launch_with_steam=_as_bool(data.get('launch_with_steam'), base.launch_with_steam),
         currencies=_as_str_list(data.get('currencies'), base.currencies),
         integration_enabled=_as_bool(data.get('integration_enabled'), base.integration_enabled),
+        theme=_as_str(data.get('theme'), base.theme) if _as_str(data.get('theme'), base.theme) in ('dark', 'light') else 'dark',
     )
 
 
@@ -171,6 +174,7 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
         'launch_with_steam': settings.launch_with_steam,
         'currencies': list(settings.currencies),
         'integration_enabled': settings.integration_enabled,
+        'theme': settings.theme,
     }
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     return target
@@ -188,6 +192,7 @@ def apply_changes(settings: Settings, changes: dict) -> Settings:
         'launch_with_steam': settings.launch_with_steam,
         'currencies': list(settings.currencies),
         'integration_enabled': settings.integration_enabled,
+        'theme': settings.theme,
     }
     merged.update(changes)
     return _from_mapping(merged)
