@@ -124,15 +124,16 @@ def is_autostart_launch(arguments: list[str] | None = None) -> bool:
 # Qt: настройки и контроллер
 # =============================================================================
 
-#: Палитры тем окна: тёмная в стиле Steam и светлая.
+#: Палитры тем окна: тёмная (тёмный фон, белый текст) и светлая
+#: (белый фон, чёрный текст).
 THEMES: dict[str, dict[str, str]] = {
     'dark': {
-        'bg': '#1b2838', 'text': '#c6d4df', 'border': '#2a475e',
-        'ok': '#3fbf6f', 'warn': '#66c0f4',
+        'bg': '#1b2838', 'text': '#ffffff', 'border': '#2a475e',
+        'btn': '#2a475e', 'ok': '#3fbf6f', 'warn': '#8fcbee',
     },
     'light': {
-        'bg': '#f5f7fa', 'text': '#1b2838', 'border': '#c8d4e0',
-        'ok': '#1f8f4f', 'warn': '#1a6fb0',
+        'bg': '#ffffff', 'text': '#000000', 'border': '#d0d7de',
+        'btn': '#e8eef4', 'ok': '#1f8f4f', 'warn': '#1a6fb0',
     },
 }
 
@@ -233,7 +234,7 @@ if QT_AVAILABLE:
                 ' margin-top: 10px; padding-top: 6px; }}'
                 'QGroupBox::title {{ color: {text}; }}'
                 'QCheckBox {{ color: {text}; }}'
-                'QPushButton {{ background-color: {border}; color: {text};'
+                'QPushButton {{ background-color: {btn}; color: {text};'
                 ' padding: 6px 14px; border-radius: 3px; }}'
                 .format(**t))
             self.restart_btn.setStyleSheet(
