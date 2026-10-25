@@ -46,8 +46,7 @@ irm https://raw.githubusercontent.com/Stintik-123/SteamPACC/main/installer/insta
 ### Способ 2: установщик
 
 1. Скачайте `SteamPACC-Setup-<версия>.exe` из [Releases](https://github.com/Stintik-123/SteamPACC/releases)
-2. Проверьте SHA256 по `SHA256SUMS.txt` из того же релиза
-3. Запустите и следуйте инструкциям мастера
+2. Запустите и следуйте инструкциям мастера по установке
 
 ### Способ 3: портативная версия
 
@@ -75,13 +74,6 @@ steampacc games  # консольный список игр
 Закрытие окна сворачивает программу в трей; полный выход — кнопка «Выход» или правый клик по значку в трее.
 
 ### Консольные команды
-
-```bash
-steampacc games             # список установленных игр
-steampacc price 570         # цены игры по appid
-steampacc price "Dota 2"    # цены по имени
-steampacc --selftest        # отчёт о системе
-```
 
 ## Известные ограничения
 
