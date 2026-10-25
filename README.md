@@ -1,6 +1,6 @@
 # SteamPACC
 
-https://github.com/Stintik-123/SteamPACC/blob/main/docs/SteamPACC.jpg
+![SteamPACC](https://raw.githubusercontent.com/Stintik-123/SteamPACC/main/docs/SteamPACC.jpg)
 
 **SteamPACC** (Steam Price and Currency Converter) — программа для отображения цен игр в Steam в разных валютах. Цены встраиваются прямо в страницы магазина клиентa Steam, как у Augmented Steam, но без браузерного расширения.
 
