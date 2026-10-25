@@ -10,31 +10,7 @@ from __future__ import annotations
 import re
 
 from steampacc import cef
-from steampacc.inject import INJECTED_SCRIPT, INJECTED_SETTINGS_SCRIPT
-
-
-def test_settings_targets_finds_settings_window() -> None:
-    '''Окно настроек Steam опознаётся по заголовку и служебному адресу.'''
-    targets = [
-        {'type': 'page', 'title': 'Настройки',
-         'url': 'about:blank?createflags=4114', 'webSocketDebuggerUrl': 'ws://x'},
-        {'type': 'page', 'title': 'Settings',
-         'url': 'about:blank?createflags=4114', 'webSocketDebuggerUrl': 'ws://y'},
-        {'type': 'page', 'title': 'Steam',
-         'url': 'about:blank?createflags=274', 'webSocketDebuggerUrl': 'ws://z'},
-        {'type': 'page', 'title': 'Настройки',
-         'url': 'https://store.steampowered.com/', 'webSocketDebuggerUrl': 'ws://w'},
-    ]
-    result = cef.settings_targets(targets)
-    assert len(result) == 2
-    assert result[0]['webSocketDebuggerUrl'] == 'ws://x'
-
-
-def test_settings_script_makes_panel_with_binding() -> None:
-    '''Сценарий панели настроек рисует панель и передаёт выбор программе.'''
-    assert 'SteamUIPopupWindowBody' in INJECTED_SETTINGS_SCRIPT
-    assert 'steampacc_settings' in INJECTED_SETTINGS_SCRIPT
-    assert 'SteamPACC_set' in INJECTED_SETTINGS_SCRIPT
+from steampacc.inject import INJECTED_SCRIPT
 
 
 def _target(url: str, type_name: str = 'page', title: str = 'Магазин') -> dict:
@@ -66,12 +42,20 @@ def test_store_targets_ignores_non_pages() -> None:
     assert cef.store_targets(targets) == []
 
 
-def test_configure_expression_embeds_currencies() -> None:
-    '''Команда настройки содержит список валют в формате JSON.'''
-    expression = cef.configure_expression(['USD', 'EUR'])
+def test_configure_expression_embeds_currencies_and_lang() -> None:
+    '''Команда настройки содержит валюты и язык.'''
+    expression = cef.configure_expression(['USD', 'EUR'], 'en')
     assert 'SteamPACC_configure' in expression
-    assert '"currencies"' in expression
     assert 'USD' in expression and 'EUR' in expression
+    assert '"lang": "en"' in expression
+
+
+def test_version_is_steam_detects_agent() -> None:
+    '''Порт опознаётся как Steam по User-Agent.'''
+    assert cef.version_is_steam({'User-Agent': 'Mozilla ... Valve Steam Client'})
+    assert cef.version_is_steam({'Browser': 'Chrome/126 Steam'})
+    assert not cef.version_is_steam({'User-Agent': 'Mozilla Chrome/120'})
+    assert not cef.version_is_steam({})
 
 
 def test_injected_script_finds_appid_by_url() -> None:
@@ -99,13 +83,24 @@ def test_injected_script_marks_box_and_uses_cache() -> None:
     assert 'price_overview' in INJECTED_SCRIPT
 
 
-def test_unavailable_region_text() -> None:
-    '''Для региона без цены пишется понятный текст вместо прочерка.'''
+def test_injected_script_uses_observer_not_polling() -> None:
+    '''Изменения страницы отслеживает MutationObserver, а не опрос каждую секунду.'''
+    assert 'MutationObserver' in INJECTED_SCRIPT
+    assert 'setInterval(update, 1000)' not in INJECTED_SCRIPT
+
+
+def test_injected_script_has_memory_cache_fallback() -> None:
+    '''При переполнении sessionStorage цены кэшируются в памяти.'''
+    assert 'var mem = {}' in INJECTED_SCRIPT
+
+
+def test_injected_script_is_bilingual() -> None:
+    '''Надписи блока есть на двух языках и переключаются настройкой.'''
+    assert 'TEXT.ru' in INJECTED_SCRIPT or "'ru':" in INJECTED_SCRIPT
+    assert 'en: {' in INJECTED_SCRIPT
+    assert "next.lang === 'ru' || next.lang === 'en'" in INJECTED_SCRIPT
+
+
+def test_unavailable_region_text_capitalized() -> None:
+    '''Для региона без цены пишется понятный текст с заглавной буквы.'''
     assert '\\u041D\\u0435\\u0434\\u043E\\u0441\\u0442\\u0443\\u043F\\u043D\\u043E' in INJECTED_SCRIPT
-    assert '__UNAVAILABLE__' not in INJECTED_SCRIPT
-
-
-def test_best_price_highlight() -> None:
-    '''Самая низкая цена помечается зелёным, как скидки в Steam.'''
-    assert '#beee11' in INJECTED_SCRIPT
-    assert 'isBest' in INJECTED_SCRIPT or 'best' in INJECTED_SCRIPT

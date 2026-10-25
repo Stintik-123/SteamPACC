@@ -32,12 +32,37 @@ def http_base(port: int) -> str:
 
 
 def debug_available(port: int = DEFAULT_DEBUG_PORT, timeout: float = 1.0) -> bool:
-    '''True, если Steam запущен с отладочным портом и отвечает.'''
+    '''True, если на порту отвечает отладочный интерфейс (без проверки, чей он).'''
     try:
         request = urllib.request.Request(
             http_base(port) + '/json/version', headers={'User-Agent': 'SteamPACC/0.3'})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status == 200
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+
+
+def version_is_steam(version: dict[str, Any]) -> bool:
+    '''True, если ответ /json/version принадлежит клиенту Steam.
+
+    У steamwebhelper в User-Agent есть слово «Steam» (Valve Steam Client).
+    Проверка защищает от подключения к чужому DevTools-порту, который
+    случайно оказался на соседнем номере.
+    '''
+    agent = str(version.get('User-Agent') or '')
+    browser = str(version.get('Browser') or '')
+    return 'Steam' in agent or 'Steam' in browser
+
+
+def is_steam_devtools(port: int = DEFAULT_DEBUG_PORT, timeout: float = 1.0) -> bool:
+    '''True, если на порту отладка именно клиента Steam.'''
+    try:
+        request = urllib.request.Request(
+            http_base(port) + '/json/version', headers={'User-Agent': 'SteamPACC/0.3'})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+        version = json.loads(payload.decode('utf-8'))
+        return isinstance(version, dict) and version_is_steam(version)
     except (OSError, urllib.error.URLError, ValueError):
         return False
 
@@ -77,38 +102,10 @@ def store_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def settings_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    '''Отбирает окно настроек клиента Steam из списка целей.
-
-    Окно настроек открывается как отдельное всплывающее окно с
-    заголовком «Настройки» (или «Settings» в английской версии) и
-    служебным адресом about:blank.
-    '''
-    result: list[dict[str, Any]] = []
-    for target in targets:
-        if not isinstance(target, dict):
-            continue
-        if target.get('type') != 'page':
-            continue
-        if (target.get('title') or '') not in ('Настройки', 'Settings'):
-            continue
-        url = target.get('url') or ''
-        if 'about:blank' in url:
-            result.append(target)
-    return result
-
-
-def configure_expression(currencies: list[str]) -> str:
-    '''Готовит выражение, передающее список валют в внедрённый код.'''
-    payload = json.dumps({'currencies': currencies}, ensure_ascii=False)
+def configure_expression(currencies: list[str], lang: str = 'ru') -> str:
+    '''Готовит выражение, передающее валюты и язык в внедрённый код.'''
+    payload = json.dumps({'currencies': currencies, 'lang': lang}, ensure_ascii=False)
     return 'window.SteamPACC_configure && window.SteamPACC_configure(' + payload + '); void 0;'
-
-
-def settings_configure_expression(currencies: list[str]) -> str:
-    '''Готовит выражение настройки панели в окне настроек Steam.'''
-    payload = json.dumps({'currencies': currencies}, ensure_ascii=False)
-    return ('window.SteamPACC_settings_configure && '
-            'window.SteamPACC_settings_configure(' + payload + '); void 0;')
 
 
 if __name__ == '__main__':  # pragma: no cover

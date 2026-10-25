@@ -7,16 +7,33 @@
 - **Цены прямо в магазине Steam** — на странице любой игры блок с ценами других регионов появляется под карточкой покупки
 - **Цены под каждым DLC** — сворачиваемый список: по клику под каждым DLC появляется его цена в трёх регионах
 - **Любые игры** — не только установленные: цены определяются по открытой странице магазина
-- **Настройки внутри Steam** — пункт SteamPACC в левом меню настроек клиента, в стиле самого Steam
+- **Обычное приложение с окном** — статус, кнопка перезапуска Steam, регионы цен, тёмная и светлая тема, русский и английский интерфейс
 - **Мгновенное применение** — смена регионов обновляет цены на открытых страницах без перезагрузки
-- **Несколько валют** — RUB, USD, EUR, GBP, TRY, KZT, UAH, PLN, BRL, JPY и другие (16 регионов)
-- **Безопасно** — без DLL и правки файлов Steam, только штатный отладочный порт клиента
+- **Несколько валют** — 16 регионов: RUB, USD, EUR, GBP, TRY, KZT, UAH, PLN, BRL, JPY и другие
 - **Консольный режим** — `steampacc games` и `steampacc price 570` работают без графики
-- **Автозапуск** — включается галочкой в настройках, пишется в реестр
+- **Автозапуск** — включается галочкой, пишется в реестр
+
+## Безопасность — прочитайте перед использованием
+
+SteamPACC перезапускает Steam с официальным флагом `-cef-enable-debugging`. Пока Steam работает с этим флагом, **у клиента открыт отладочный порт (127.0.0.1:8080) без авторизации**. Это значит:
+
+- любая программа на вашем компьютере может подключиться к этому порту и читать содержимое страниц Steam, выполнять код в них, обращаться к вашей сессии — SteamPACC защищает только себя (проверяет по User-Agent, что порт принадлежит Steam), но закрыть порт от других программ не может;
+- сами цены SteamPACC запрашивает только через официальный API магазина и ничего не отправляет наружу; файлы Steam не изменяются, DLL-инъекций нет.
+
+Рекомендации:
+
+- **не держите Steam с этим флагом постоянно**: включили посмотреть цены — при желании перезапустите Steam без интеграции;
+- понимайте, что использование отладочного порта — штатная возможность Steam, но ответственность за открытие порта на вашей машине на вас.
+
+Установка одной командой проверяет контрольные суммы скачанных файлов (`SHA256SUMS.txt` в релизе). Для ручной установки проверьте сумму сами:
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\SteamPACC.exe
+```
 
 ## Установка
 
-### Способ 1: Одна команда из консоли (рекомендуется)
+### Способ 1: одна команда из консоли (рекомендуется)
 
 В PowerShell:
 
@@ -24,106 +41,113 @@
 irm https://raw.githubusercontent.com/Stintik-123/SteamPACC/main/installer/install.ps1 | iex
 ```
 
-Скрипт скачает последний релиз, установит программу в `%LOCALAPPDATA%\SteamPACC`, создаст ярлык в меню «Пуск» и предложит включить автозапуск.
+Скрипт скачает последний релиз, сверит SHA256, установит программу в `%LOCALAPPDATA%\SteamPACC`, создаст ярлык в меню «Пуск» и предложит включить автозапуск.
 
-### Способ 2: Установщик
+### Способ 2: установщик
 
 1. Скачайте `SteamPACC-Setup-<версия>.exe` из [Releases](https://github.com/Stintik-123/SteamPACC/releases)
-2. Запустите и следуйте инструкциям мастера
+2. Проверьте SHA256 по `SHA256SUMS.txt` из того же релиза
+3. Запустите и следуйте инструкциям мастера
 
-### Способ 3: Портативная версия
+### Способ 3: портативная версия
 
 1. Скачайте `SteamPACC.exe` из [Releases](https://github.com/Stintik-123/SteamPACC/releases)
 2. Положите в любую папку и запустите
 
-### Способ 4: Из исходников через pip
+### Способ 4: из исходников через pip
 
 ```bash
 git clone https://github.com/Stintik-123/SteamPACC.git
 cd SteamPACC
 pip install .
-steampacc        # графический режим
+steampacc        # приложение
 steampacc games  # консольный список игр
 ```
 
-Или без клона: `pip install git+https://github.com/Stintik-123/SteamPACC.git`
-
 ## Использование
 
-1. **Запустите SteamPACC** — он появится в трее (рядом с часами)
-2. **Правый клик по значку → «Перезапустить Steam с ценами»** — Steam перезапустится с включённой интеграцией (~20 секунд)
+1. **Запустите SteamPACC** — откроется окно программы
+2. **Нажмите «Перезапустить Steam с ценами»** — Steam перезапустится с включённой интеграцией (~20 секунд), программа дождётся готовности
 3. **Откройте любую игру в магазине Steam** — под карточкой покупки появится блок «Цены в других регионах»
-4. **Валюта** — Настройки Steam → пункт SteamPACC → отметьте регионы; цены обновятся сразу
+4. **Валюта** — галочки регионов в окне программы → «Применить»; цены обновятся сразу
+5. **Язык и тема** — там же: галочка «English interface» и «Светлая тема»
 
-### Как это безопасно
-
-Программа подключается к отладочному порту Steam (штатный флаг `-cef-enable-debugging`), без изменения файлов клиента и без DLL-инъекций. Внедрённый сценарий только запрашивает цены через официальный API магазина и рисует блок — он не отправляет данные наружу и не трогает аккаунт.
-
-### Управление
-
-Правый клик по значку в трее:
-
-- **Перезапустить Steam с ценами** — включить интеграцию с магазином
-- **Настройки** — регионы цен, интеграция, автозапуск
-- **Отчёт о системе** — файл диагностики, откроется папка с ним
-- **Выход**
+Закрытие окна сворачивает программу в трей; полный выход — кнопка «Выход» или правый клик по значку в трее.
 
 ### Консольные команды
 
-Работают без графики — из любого терминала:
-
 ```bash
-steampacc games             # список установленных игр с appid и размером
-steampacc price 570         # цены Dota 2 по appid
-steampacc price "Dota 2"    # цены по имени игры
+steampacc games             # список установленных игр
+steampacc price 570         # цены игры по appid
+steampacc price "Dota 2"    # цены по имени
 steampacc --selftest        # отчёт о системе
-steampacc --smoke           # проверка графической части
-steampacc --version         # версия
 ```
-
-В портативной версии вместо `steampacc` используйте `SteamPACC.exe games`.
-
-## Настройки
-
-Хранятся в `%APPDATA%\SteamPACC\config.json`:
-
-| Параметр | Тип | Описание | По умолчанию |
-|----------|-----|----------|--------------|
-| `currencies` | массив строк | Регионы для показа (до 8) | `["RUB", "USD", "EUR"]` |
-| `integration_enabled` | булево | Внедрение цен в магазин | `true` |
-| `launch_with_steam` | булево | Запускать с Windows | `false` |
-
-Повреждённый файл не ломает программу: подставляются значения по умолчанию.
-
-## Как это работает
-
-1. SteamPACC следит за окнами клиента Steam через отладочный порт steamwebhelper
-2. На каждой странице магазина добавляет сценарий, который по адресу страницы определяет игру
-3. Цены запрашиваются официальным API магазина изнутри страницы и кэшируются на 15 минут
-4. Блок цен рисуется в стиле магазина; цены DLC — сворачиваемый список под карточкой покупки
-5. Выбор регионов из настроек Steam передаётся программе и применяется мгновенно
 
 ## Известные ограничения
 
-- Steam Store API с некоторых IP не отдаёт цены отдельных регионов (например, CNY) — в блоке будет «Недоступно в этом регионе»
-- После обновления Steam вёрстка страниц может измениться — тогда блок цен надо будет подправить в новой версии
-- Программа не меняет регион и файлы Steam, не внедряется в клиент через DLL
+- Steam Store API с некоторых IP не отдаёт цены отдельных регионов (например, CNY) — будет «Недоступно в этом регионе»
+- После обновления Steam вёрстка страниц может измениться — блок цен перестанет появляться до обновления SteamPACC
+- Если Steam установлен в нестандартном месте, укажите steam.exe кнопкой в окне программы
 
 ## Требования
 
-- **Windows 10/11** (64-bit)
-- **Steam** (установлен и запущен)
-- **Python 3.11+** (для запуска из исходников)
+- Windows 10/11 (64-bit), Steam, Python 3.11+ (для запуска из исходников)
+
+## Участие в разработке
+
+См. [CONTRIBUTING.md](CONTRIBUTING.md) / See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Лицензия
 
 MIT License — см. [LICENSE](LICENSE)
 
-## Поддержка
-
-- **Issues**: [GitHub Issues](https://github.com/Stintik-123/SteamPACC/issues)
-- **Документация**: [USER_GUIDE.md](docs/USER_GUIDE.md)
-
 ---
 
-**SteamPACC** — простая и удобная программа для отображения цен игр в Steam!
+# SteamPACC (English)
+
+**SteamPACC** (Steam Price and Currency Converter) shows Steam game prices in multiple currencies. Prices are embedded directly into the Steam client's store pages — like Augmented Steam, but without a browser extension.
+
+## Features
+
+- **Prices right in the Steam store** — a block with regional prices appears under the purchase box on any game page
+- **Per-DLC prices** — a collapsible list adds a price line under each DLC
+- **Any game** — detected from the open store page, not just installed ones
+- **Regular app window** — status, Steam restart button, region checkboxes, dark and light themes, Russian and English UI
+- **Instant apply** — changing regions updates open pages without a reload
+- **16 currencies** — RUB, USD, EUR, GBP, TRY, KZT, UAH, PLN, BRL, JPY and more
+- **Console mode** — `steampacc games`, `steampacc price 570`
+- **Autostart** with Windows via a checkbox
+
+## Security — read before using
+
+SteamPACC restarts Steam with the official `-cef-enable-debugging` flag. While Steam runs with this flag, **its debug port (127.0.0.1:8080) is open without authentication**: any local program can connect to it, read Steam pages and run code in them. SteamPACC protects itself (it verifies the port belongs to Steam via User-Agent) but cannot close the port for others. Recommendations: don't keep Steam running with the flag permanently; restart it without integration when you're done comparing prices.
+
+The one-line installer verifies SHA256 checksums (`SHA256SUMS.txt` in each release). For manual installs verify yourself:
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\SteamPACC.exe
+```
+
+## Install
+
+```powershell
+irm https://raw.githubusercontent.com/Stintik-123/SteamPACC/main/installer/install.ps1 | iex
+```
+
+Or grab `SteamPACC-Setup-<version>.exe` / `SteamPACC.exe` from [Releases](https://github.com/Stintik-123/SteamPACC/releases), or `pip install git+https://github.com/Stintik-123/SteamPACC.git`.
+
+## Usage
+
+1. Launch SteamPACC — the window opens
+2. Click **Restart Steam with prices** — Steam restarts with integration (~20 s), the app waits until ready
+3. Open any game in the store — the regional price block appears
+4. Pick regions in the app window → **Apply**; open pages update instantly
+5. Language and theme toggles are in the same window
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE)

@@ -7,6 +7,10 @@ API магазина — прямо изнутри страницы, тем же
 сам Steam, — и дорисовывает блок с ценами выбранных регионов под
 карточкой покупки. Стиль блока повторяет оформление магазина.
 
+Реакция на изменения страницы — MutationObserver с небольшой паузой:
+без постоянного перебора DOM каждую секунду. Кэш цен живёт в
+sessionStorage, а при переполнении — в памяти страницы.
+
 Ограничения намеренные: сценарий ничего не отправляет наружу, не меняет
 поведение кнопок магазина и не обращается к аккаунту.
 '''
@@ -34,6 +38,25 @@ _SYMBOLS_JS = (
     'CAD:"C$", SEK:"kr", CNY:"\\u00A5"};'
 )
 
+#: Надписи на двух языках: заголовок, бесплатно, недоступно, нет сети,
+#: загрузка, подпись блока DLC.
+_TEXTS_JS = (
+    'var TEXT = {\n'
+    '  ru: {header: "\\u0426\\u0435\\u043D\\u044B \\u0432 \\u0434\\u0440\\u0443\\u0433\\u0438\\u0445 \\u0440\\u0435\\u0433\\u0438\\u043E\\u043D\\u0430\\u0445",\n'
+    '       free: "\\u0411\\u0435\\u0441\\u043F\\u043B\\u0430\\u0442\\u043D\\u043E",\n'
+    '       unavailable: "\\u041D\\u0435\\u0434\\u043E\\u0441\\u0442\\u0443\\u043F\\u043D\\u043E \\u0432 \\u044D\\u0442\\u043E\\u043C \\u0440\\u0435\\u0433\\u0438\\u043E\\u043D\\u0435",\n'
+    '       offline: "\\u043D\\u0435\\u0442 \\u0441\\u0432\\u044F\\u0437\\u0438",\n'
+    '       loading: "\\u0417\\u0430\\u0433\\u0440\\u0443\\u0437\\u043A\\u0430\\u2026",\n'
+    '       dlc: "\\u0426\\u0435\\u043D\\u044B DLC \\u0432 \\u0434\\u0440\\u0443\\u0433\\u0438\\u0445 \\u0440\\u0435\\u0433\\u0438\\u043E\\u043D\\u0430\\u0445"},\n'
+    '  en: {header: "PRICES IN OTHER REGIONS",\n'
+    '       free: "Free",\n'
+    '       unavailable: "Not available in this region",\n'
+    '       offline: "no connection",\n'
+    '       loading: "Loading\\u2026",\n'
+    '       dlc: "DLC prices in other regions"}\n'
+    '};'
+)
+
 #: CSS блоков. В Python-строках двойные кавычки пишутся свободно,
 #: поэтому шрифт задаётся как есть: font-family:"Motiva Sans".
 _CSS_BOX = (
@@ -53,13 +76,6 @@ _CSS_PRICE = 'color:#c6d4df; white-space:nowrap;'
 _CSS_OLD = 'color:#7c8c9c; text-decoration:line-through; margin-right:6px; font-size:12px;'
 _CSS_DISCOUNT = 'background:#4c6b22; color:#beee11; font-size:11px; padding:0 5px; border-radius:2px; margin-right:6px;'
 
-_HEADER_TEXT = '"\\u0426\\u0435\\u043D\\u044B \\u0432 \\u0434\\u0440\\u0443\\u0433\\u0438\\u0445 \\u0440\\u0435\\u0433\\u0438\\u043E\\u043D\\u0430\\u0445"'
-_FREE_TEXT = '"\\u0411\\u0435\\u0441\\u043F\\u043B\\u0430\\u0442\\u043D\\u043E"'
-_UNAVAILABLE_TEXT = (
-    '"\\u041D\\u0435\\u0434\\u043E\\u0441\\u0442\\u0443\\u043F\\u043D\\u043E '
-    '\\u0432 \\u044D\\u0442\\u043E\\u043C \\u0440\\u0435\\u0433\\u0438\\u043E\\u043D\\u0435"'
-)
-
 #: Сценарий целиком. Точка входа для настроек — window.SteamPACC_configure.
 INJECTED_SCRIPT = r'''
 (function () {
@@ -69,10 +85,16 @@ INJECTED_SCRIPT = r'''
 
   __CC_MAP__
   __SYMBOLS__
-  var cfg = { currencies: ['RUB', 'USD', 'EUR'] };
+  __TEXTS__
+  var cfg = { currencies: ['RUB', 'USD', 'EUR'], lang: 'ru' };
   var TTL = 15 * 60 * 1000;
   // Версия кэша: при изменении формата запросов старые записи игнорируются.
   var CACHE_VERSION = 'v2';
+  // Запасной кэш в памяти: sessionStorage ограничен, при переполнении
+  // переключаемся на него молча.
+  var mem = {};
+
+  function t(key) { return (TEXT[cfg.lang] || TEXT.ru)[key]; }
 
   function appId() {
     var m = location.href.match(/\/app\/(\d+)/);
@@ -82,25 +104,32 @@ INJECTED_SCRIPT = r'''
   function cacheKey(appid, code) { return CACHE_VERSION + ':steampacc:' + appid + ':' + code; }
 
   function cacheGet(appid, code) {
+    var key = cacheKey(appid, code);
     try {
-      var raw = sessionStorage.getItem(cacheKey(appid, code));
-      if (!raw) { return undefined; }
-      var obj = JSON.parse(raw);
-      if (Date.now() - obj.t > TTL) { return undefined; }
-      return obj.p;
-    } catch (e) { return undefined; }
+      var raw = sessionStorage.getItem(key);
+      if (raw) {
+        var obj = JSON.parse(raw);
+        if (Date.now() - obj.t <= TTL) { return obj.p; }
+        return undefined;
+      }
+    } catch (e) { /* читаем из памяти */ }
+    if (mem[key] && Date.now() - mem[key].t <= TTL) { return mem[key].p; }
+    return undefined;
   }
 
   function cacheSet(appid, code, p) {
+    var entry = { t: Date.now(), p: p };
+    var key = cacheKey(appid, code);
+    mem[key] = entry;
     try {
-      sessionStorage.setItem(cacheKey(appid, code), JSON.stringify({ t: Date.now(), p: p }));
-    } catch (e) { }
+      sessionStorage.setItem(key, JSON.stringify(entry));
+    } catch (e) { /* переехали в память — это нормально */ }
   }
 
   function fmt(cents, currency) {
     if (cents == null) { return '\u2014'; }
     var value = cents / 100;
-    var text = value.toLocaleString('ru-RU', {
+    var text = value.toLocaleString(cfg.lang === 'en' ? 'en-US' : 'ru-RU', {
       minimumFractionDigits: value % 1 ? 2 : 0,
       maximumFractionDigits: 2
     });
@@ -152,15 +181,16 @@ INJECTED_SCRIPT = r'''
     __PRICE__
     if (best) {
       value.style.color = '#beee11';
-      value.title = '\u0421\u0430\u043C\u0430\u044F \u043D\u0438\u0437\u043A\u0430\u044F \u0446\u0435\u043D\u0430';
+      value.title = cfg.lang === 'en' ? 'Lowest price' : '\u0421\u0430\u043C\u0430\u044F \u043D\u0438\u0437\u043A\u0430\u044F \u0446\u0435\u043D\u0430';
     }
     if (p === null) {
-      value.textContent = '\u2026';
+      value.textContent = t('offline');
+      value.style.color = '#5c6672';
     } else if (p.none) {
-      value.textContent = __UNAVAILABLE__;
+      value.textContent = t('unavailable');
       value.style.color = '#5c6672';
     } else if (p.free) {
-      value.textContent = __FREE__;
+      value.textContent = t('free');
     } else {
       if (p.discount && p.initial && p.initial > p.final) {
         var badge = document.createElement('span');
@@ -184,7 +214,7 @@ INJECTED_SCRIPT = r'''
   function header() {
     var el = document.createElement('span');
     __HEADER__
-    el.textContent = __TITLE__;
+    el.textContent = t('header');
     return el;
   }
 
@@ -212,33 +242,6 @@ INJECTED_SCRIPT = r'''
     });
   }
 
-  var lastUrl = null;
-
-  function update() {
-    var box = ensureBox();
-    if (!box) { return; }
-    var url = location.href;
-    if (url === lastUrl) { return; }
-    lastUrl = url;
-    // Переключатель DLC привязан к странице: при переходе собирается заново.
-    var oldDlc = document.getElementById('steampacc_dlc_toggle');
-    if (oldDlc) { oldDlc.parentNode.removeChild(oldDlc); }
-    var appid = appId();
-    if (!appid) {
-      box.style.display = 'none';
-      return;
-    }
-    box.style.display = '';
-    box.innerHTML = '';
-    box.appendChild(header());
-    var tasks = cfg.currencies.map(function (code) {
-      return fetchOne(appid, code).then(function (p) { return [code, p]; });
-    });
-    Promise.all(tasks).then(function (rows) {
-      render(appid, rows);
-    });
-  }
-
   /* ---- Цены DLC: строчка цен под каждым DLC, сворачивается ---- */
 
   function dlcRows() {
@@ -246,7 +249,13 @@ INJECTED_SCRIPT = r'''
     var result = [];
     rows.forEach(function (row) {
       var id = (row.getAttribute('data-ds-appid') || '').split(',')[0];
-      if (/^\d+$/.test(id)) { result.push({ row: row, id: id }); }
+      if (!/^\d+$/.test(id)) { return; }
+      // Бесплатность берём прямо со страницы: у бесплатных DLC Steam
+      // пишет «Бесплатно»/«Free» в цене, а API часто не отдаёт is_free.
+      var priceEl = row.querySelector('.game_area_dlc_price, .discount_final_price');
+      var priceText = priceEl ? priceEl.textContent.trim() : '';
+      var free = /^(\u0411\u0435\u0441\u043F\u043B\u0430\u0442\u043D\u043E|Free)$/i.test(priceText);
+      result.push({ row: row, id: id, free: free });
     });
     return result.slice(0, 40);
   }
@@ -257,35 +266,51 @@ INJECTED_SCRIPT = r'''
     line.setAttribute('data-steampacc-id', id);
     line.style.cssText = 'font-size:12px; color:#66c0f4; padding:2px 4px 6px;'
         + ' text-align:left; line-height:15px;';
-    line.textContent = '\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430\u2026';
+    line.textContent = t('loading');
     return line;
   }
 
-  function fillLine(line, id) {
+  function fillLine(line, id, isFree) {
+    if (isFree) {
+      line.textContent = t('free');
+      return;
+    }
     var codes = cfg.currencies.slice(0, 3);
-    var tasks = codes.map(function (c) { return fetchOne(id, c); });
-    Promise.all(tasks).then(function (prices) {
-      var parts = [];
-      var unavailable = true;
-      codes.forEach(function (code, i) {
-        var p = prices[i];
-        if (p && !p.none && !p.free && p.final != null) {
-          unavailable = false;
-          parts.push(code + ' ' + fmt(p.final, p.currency));
+    var attempt = function (retried) {
+      var tasks = codes.map(function (c) { return fetchOne(id, c); });
+      Promise.all(tasks).then(function (prices) {
+        var failed = prices.indexOf(null) >= 0;
+        if (failed && !retried) {
+          // Одна повторная попытка через секунду: сеть могла мигнуть.
+          setTimeout(function () { attempt(true); }, 1000);
+          return;
+        }
+        var parts = [];
+        var unavailable = true;
+        codes.forEach(function (code, i) {
+          var p = prices[i];
+          if (p && !p.none && !p.free && p.final != null) {
+            unavailable = false;
+            parts.push(code + ' ' + fmt(p.final, p.currency));
+          }
+        });
+        if (failed && unavailable) {
+          line.textContent = t('offline');
+          line.style.color = '#5c6672';
+        } else if (unavailable) {
+          line.textContent = t('unavailable');
+          line.style.color = '#5c6672';
+        } else {
+          line.textContent = parts.join('  \u00B7  ');
         }
       });
-      if (unavailable) {
-        line.textContent = __UNAVAILABLE__;
-        line.style.color = '#5c6672';
-      } else {
-        line.textContent = parts.join('  \u00B7  ');
-      }
-    });
+    };
+    attempt(false);
   }
 
   function buildDlcToggle() {
     var rows = dlcRows();
-    if (!rows.length) { return; }
+    if (!rows.length || !cfg.currencies.length) { return; }
     var existing = document.getElementById('steampacc_dlc_toggle');
     if (existing) { return; }
     var toggle = document.createElement('div');
@@ -293,12 +318,11 @@ INJECTED_SCRIPT = r'''
     toggle.style.cssText = 'margin:6px 0; font-size:13px; color:#66c0f4;'
         + ' cursor:pointer; user-select:none; text-align:left;'
         + ' font-family:"Motiva Sans", Arial, sans-serif;';
-    toggle.textContent = '\u25B8 \u0426\u0435\u043D\u044B DLC \u0432 \u0434\u0440\u0443\u0433\u0438\u0445 \u0440\u0435\u0433\u0438\u043E\u043D\u0430\u0445 (' + rows.length + ')';
+    toggle.textContent = '\u25B8 ' + t('dlc') + ' (' + rows.length + ')';
     var open = false;
     toggle.addEventListener('click', function () {
       open = !open;
-      toggle.textContent = (open ? '\u25BE ' : '\u25B8 ') +
-        '\u0426\u0435\u043D\u044B DLC \u0432 \u0434\u0440\u0443\u0433\u0438\u0445 \u0440\u0435\u0433\u0438\u043E\u043D\u0430\u0445 (' + rows.length + ')';
+      toggle.textContent = (open ? '\u25BE ' : '\u25B8 ') + t('dlc') + ' (' + rows.length + ')';
       rows.forEach(function (item) {
         var row = item.row;
         if (open) {
@@ -307,8 +331,8 @@ INJECTED_SCRIPT = r'''
             line = priceLine(item.id);
             row.appendChild(line);
           }
-          if (line.textContent === '\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430\u2026') {
-            fillLine(line, item.id);
+          if (line.textContent === t('loading') || line.textContent === t('offline')) {
+            fillLine(line, item.id, item.free);
           }
           line.style.display = '';
         } else {
@@ -321,239 +345,85 @@ INJECTED_SCRIPT = r'''
     first.parentNode.insertBefore(toggle, first);
   }
 
+  var lastUrl = null;
+
+  function update() {
+    var box = ensureBox();
+    if (!box) { return; }
+    var url = location.href;
+    if (url === lastUrl) { return; }
+    lastUrl = url;
+    // Блок DLC привязан к странице: при переходе собирается заново.
+    var oldDlc = document.getElementById('steampacc_dlc_toggle');
+    if (oldDlc) { oldDlc.parentNode.removeChild(oldDlc); }
+    // Все регионы сняты: блок цен и DLC не показываем вовсе.
+    if (!cfg.currencies.length) {
+      box.style.display = 'none';
+      return;
+    }
+    var appid = appId();
+    if (!box) { return; }
+    if (!appid) {
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = '';
+    box.innerHTML = '';
+    box.appendChild(header());
+    var tasks = cfg.currencies.map(function (code) {
+      return fetchOne(appid, code).then(function (p) { return [code, p]; });
+    });
+    Promise.all(tasks).then(function (rows) {
+      render(appid, rows);
+      buildDlcToggle();
+    });
+  }
+
+  // Реакция на изменения страницы: вместо опроса каждую секунду —
+  // MutationObserver с паузой и редкая страховочная проверка.
+  var scheduled = false;
+  function scheduleUpdate() {
+    if (scheduled) { return; }
+    scheduled = true;
+    setTimeout(function () {
+      scheduled = false;
+      update();
+      buildDlcToggle();
+    }, 300);
+  }
+
+  function startObserver() {
+    if (!document.body) {
+      setTimeout(startObserver, 200);
+      return;
+    }
+    var observer = new MutationObserver(scheduleUpdate);
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
   window.SteamPACC_configure = function (next) {
     if (next && next.currencies && next.currencies.length) {
       cfg.currencies = next.currencies.slice();
+    }
+    if (next && (next.lang === 'ru' || next.lang === 'en')) {
+      cfg.lang = next.lang;
     }
     lastUrl = null;
     update();
   };
 
-  setInterval(update, 1000);
-  // Строки DLC появляются в DOM позже основного блока: пробуем достроить.
-  setInterval(function () {
-    if (document.getElementById('steampacc_dlc_toggle')) { return; }
-    if (!/\/app\/(\d+)/.test(location.href)) { return; }
-    if (document.querySelector('.game_area_dlc_row[data-ds-appid]')) {
-      buildDlcToggle();
-    }
-  }, 1000);
+  startObserver();
   setTimeout(update, 0);
+  setInterval(update, 5000);
   document.addEventListener('DOMContentLoaded', function () { update(); });
 })();
 '''.replace('__CC_MAP__', _CC_MAP_JS) \
    .replace('__SYMBOLS__', _SYMBOLS_JS) \
+   .replace('__TEXTS__', _TEXTS_JS) \
    .replace('__BOX__', _style('box', _CSS_BOX)) \
    .replace('__LABEL__', _style('label', _CSS_LABEL)) \
    .replace('__PRICE__', _style('value', _CSS_PRICE)) \
    .replace('__OLD__', _style('old', _CSS_OLD)) \
    .replace('__DISCOUNT__', _style('badge', _CSS_DISCOUNT)) \
    .replace('__ROW__', _style('line', _CSS_ROW)) \
-   .replace('__HEADER__', _style('el', _CSS_HEADER)) \
-   .replace('__TITLE__', _HEADER_TEXT) \
-   .replace('__FREE__', _FREE_TEXT) \
-   .replace('__UNAVAILABLE__', _UNAVAILABLE_TEXT) \
-   .replace('__TOGGLE__', "'" + _CSS_HEADER + "'")
-
-#: CSS панели настроек в стиле Steam.
-_SETTINGS_CSS = (
-    'position:fixed; z-index:99999; overflow-y:auto; padding:16px 18px; display:none;'
-    ' background:linear-gradient(to bottom, #1b2838, #141e2d);'
-    ' font-family:"Motiva Sans", Arial, sans-serif;'
-    ' font-size:13px; color:#c6d4df; box-shadow:0 4px 16px rgba(0,0,0,0.5);'
-)
-_SETTINGS_TITLE_CSS = (
-    'display:block; color:#66c0f4; font-size:12px; font-weight:600;'
-    ' text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px;'
-)
-_SETTINGS_LABEL_CSS = (
-    'display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer;'
-    ' color:#c6d4df;'
-)
-
-#: Сценарий для окна настроек Steam.
-#: Добавляет свой пункт «SteamPACC» в левое меню настроек (клоном стиля
-#: штатного пункта) и по клику показывает панель регионов поверх области
-#: содержимого. Выбор галочек передаётся программе через биндинг
-#: SteamPACC_set. Если разметка Steam не опознана, панель показывается
-#: в углу окна как запасной вариант.
-INJECTED_SETTINGS_SCRIPT = r'''
-(function () {
-  'use strict';
-  if (window.__STEAMPACC_SETTINGS__) { return; }
-  window.__STEAMPACC_SETTINGS__ = true;
-
-  var cfg = { currencies: ['RUB', 'USD', 'EUR'] };
-  var SYM = {RUB:"\u20BD", USD:"$", EUR:"\u20AC", GBP:"\u00A3", JPY:"\u00A5",
-             KRW:"\u20A9", INR:"\u20B9", TRY:"\u20BA", UAH:"\u20B4",
-             KZT:"\u20B8", PLN:"z\u0142", BRL:"R$", AUD:"A$", CAD:"C$",
-             SEK:"kr", CNY:"\u00A5"};
-  var ALL = Object.keys(SYM);
-
-  function send() {
-    if (typeof window.SteamPACC_set === 'function') {
-      window.SteamPACC_set(JSON.stringify({ currencies: cfg.currencies }));
-    }
-  }
-
-  function buildCheckboxes(host) {
-    ALL.forEach(function (code) {
-      var label = document.createElement('label');
-      label.style.cssText = __SET_LABEL__;
-      var box = document.createElement('input');
-      box.type = 'checkbox';
-      box.value = code;
-      box.checked = cfg.currencies.indexOf(code) >= 0;
-      box.addEventListener('change', function () {
-        var picked = ALL.filter(function (c) {
-          var b = host.querySelector('input[value=' + c + ']');
-          return b && b.checked;
-        });
-        cfg.currencies = picked.length ? picked : ['RUB', 'USD', 'EUR'];
-        send();
-      });
-      var text = document.createElement('span');
-      text.textContent = code + '  ' + SYM[code];
-      label.appendChild(box);
-      label.appendChild(text);
-      host.appendChild(label);
-    });
-  }
-
-  function makePanel(id) {
-    var el = document.createElement('div');
-    el.id = id;
-    el.style.cssText = __SET_PANEL__;
-    var title = document.createElement('span');
-    title.style.cssText = __SET_TITLE__;
-    title.textContent = 'SteamPACC \u2014 \u0440\u0435\u0433\u0438\u043E\u043D\u044B \u0446\u0435\u043D \u0432 \u043C\u0430\u0433\u0430\u0437\u0438\u043D\u0435';
-    el.appendChild(title);
-    buildCheckboxes(el);
-    return el;
-  }
-
-  /* ---- Нативная встройка: пункт в меню настроек ---- */
-
-  var navItem = null;
-  var overlay = null;
-
-  function showOverlay() {
-    var sample = null;
-    var all = document.querySelectorAll('[id$=_Content]');
-    Array.prototype.forEach.call(all, function (c) {
-      if (!sample && c.offsetParent !== null && (c.textContent || '').length > 0) {
-        sample = c;
-      }
-    });
-    if (!sample) { return false; }
-    var rect = sample.getBoundingClientRect();
-    overlay.style.top = rect.top + 'px';
-    overlay.style.left = rect.left + 'px';
-    overlay.style.width = rect.width + 'px';
-    overlay.style.height = rect.height + 'px';
-    overlay.style.display = 'block';
-    return true;
-  }
-
-  function hideOverlay() {
-    if (!overlay) { return; }
-    overlay.style.display = 'none';
-    if (navItem) {
-      navItem.setAttribute('aria-selected', 'false');
-      navItem.style.background = '';
-      navItem.style.color = '';
-    }
-  }
-
-  var ICON_SVG = '<svg viewBox="0 0 36 36" width="20" height="20" xmlns="http://www.w3.org/2000/svg">'
-      + '<circle cx="18" cy="18" r="16" fill="#66c0f4"/>'
-      + '<path d="M12 26V10h9a6 6 0 0 1 0 12h-6" fill="none" stroke="#1b2838" stroke-width="3.4" stroke-linecap="round"/>'
-      + '</svg>';
-
-  function buildNative() {
-    if (navItem && document.contains(navItem)) { return true; }
-    var items = document.querySelectorAll('[role="tab"][id*="/settings/"]');
-    if (!items.length) { return false; }
-    var ref = items[items.length - 1];
-
-    // Пункты меню могут лежать в группах по два: поднимаемся к общему
-    // списку, в котором больше трёх пунктов, чтобы наш пункт встал
-    // отдельной строкой, а не рядом с «Музыкой».
-    var list = ref.parentElement;
-    while (list && list !== document.body
-           && list.querySelectorAll('[role="tab"]').length < 3) {
-      list = list.parentElement;
-    }
-    if (!list || list === document.body) { return false; }
-    if (list.querySelector('#steampacc_nav_item')) { return true; }
-
-    navItem = document.createElement('div');
-    navItem.id = 'steampacc_nav_item';
-    navItem.className = ref.className;
-    navItem.setAttribute('role', 'tab');
-    navItem.setAttribute('aria-selected', 'false');
-    // Иконка: берём класс родной (даёт размер и отступы), но вставляем
-    // в неё свой значок вместо чужого.
-    var icon = document.createElement('div');
-    if (ref.children.length >= 1) {
-      icon.className = ref.children[0].className;
-    }
-    icon.innerHTML = ICON_SVG;
-    navItem.appendChild(icon);
-    var label = document.createElement('div');
-    if (ref.children.length >= 2) { label.className = ref.children[1].className; }
-    label.textContent = 'SteamPACC';
-    navItem.appendChild(label);
-
-    overlay = makePanel('steampacc_settings');
-
-    navItem.addEventListener('click', function (event) {
-      event.stopPropagation();
-      if (!showOverlay()) { return; }
-      navItem.setAttribute('aria-selected', 'true');
-      navItem.style.background = 'rgba(102,192,244,0.15)';
-    });
-
-    document.addEventListener('click', function (event) {
-      if (!overlay || overlay.style.display !== 'block') { return; }
-      if (navItem.contains(event.target) || overlay.contains(event.target)) { return; }
-      hideOverlay();
-    }, true);
-
-    list.appendChild(navItem);
-    document.body.appendChild(overlay);
-    return true;
-  }
-
-  function fallbackPanel() {
-    var host = document.body;
-    if (!host || !/SteamUIPopupWindowBody/.test(host.className || '')) { return; }
-    if (!document.getElementById('steampacc_settings')) {
-      var el = makePanel('steampacc_settings');
-      el.style.cssText += ' position:fixed; right:12px; bottom:12px; width:230px;';
-      host.appendChild(el);
-    }
-  }
-
-  function tick() {
-    if (!buildNative()) { fallbackPanel(); }
-  }
-
-  window.SteamPACC_settings_configure = function (next) {
-    if (next && next.currencies && next.currencies.length) {
-      cfg.currencies = next.currencies.slice();
-    }
-    var el = document.getElementById('steampacc_settings');
-    if (el) {
-      Array.prototype.forEach.call(el.querySelectorAll('input'), function (box) {
-        box.checked = cfg.currencies.indexOf(box.value) >= 0;
-      });
-    }
-  };
-
-  setInterval(tick, 1000);
-  setTimeout(tick, 0);
-})();
-'''.replace('__SET_PANEL__', "'" + _SETTINGS_CSS + "'") \
-   .replace('__SET_TITLE__', "'" + _SETTINGS_TITLE_CSS + "'") \
-   .replace('__SET_LABEL__', "'" + _SETTINGS_LABEL_CSS + "'")
+   .replace('__HEADER__', _style('el', _CSS_HEADER))

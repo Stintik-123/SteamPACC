@@ -4,7 +4,7 @@
 стандартную библиотеку Python и читает файлы Steam, ничего в них не меняя.
 '''
 
-__version__ = '1.1.1'
+__version__ = '1.2.0'
 
 APP_DIR_NAME = 'SteamPACC'
 

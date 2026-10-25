@@ -43,6 +43,26 @@ $tempFile = Join-Path $env:TEMP $asset.name
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tempFile `
     -Headers @{ 'User-Agent' = 'SteamPACC-Installer' }
 
+# Проверка целостности: контрольные суммы лежат в SHA256SUMS.txt релиза.
+$sums = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
+if ($sums) {
+    $sumsFile = Join-Path $env:TEMP 'SteamPACC-SHA256SUMS.txt'
+    Invoke-WebRequest -Uri $sums.browser_download_url -OutFile $sumsFile `
+        -Headers @{ 'User-Agent' = 'SteamPACC-Installer' }
+    $expected = (Get-Content $sumsFile | Where-Object { $_ -match [regex]::Escape($asset.name) }) -split '\s+' | Select-Object -First 1
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $tempFile).Hash.ToLower()
+    if ($expected -and $actual -ne $expected.ToLower()) {
+        Write-Host "ОШИБКА: контрольная сумма не совпала." -ForegroundColor Red
+        Write-Host "Ожидалось: $expected"
+        Write-Host "Получено:  $actual"
+        Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+    Write-Host 'Контрольная сумма совпала.'
+} else {
+    Write-Host 'ВНИМАНИЕ: в релизе нет SHA256SUMS.txt, проверка целостности пропущена.' -ForegroundColor Yellow
+}
+
 if ($asset.name -like '*.zip') {
     Write-Host 'Распаковываю архив...'
     Expand-Archive -Path $tempFile -DestinationPath $installDir -Force

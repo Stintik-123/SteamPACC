@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 from . import cef
-from .inject import INJECTED_SCRIPT, INJECTED_SETTINGS_SCRIPT
+from .inject import INJECTED_SCRIPT
 
 try:
     from PySide6.QtCore import QObject, QTimer, QUrl, Signal
@@ -47,34 +47,23 @@ if QT_AVAILABLE:
         При обрыве связи объект удаляется, а сканер заведёт новый.
         '''
 
-        def __init__(self, target: dict[str, Any], parent: QObject | None = None,
-                     settings_mode: bool = False):
+        def __init__(self, target: dict[str, Any], parent: QObject | None = None):
             super().__init__(parent)
             self.key = str(target.get('webSocketDebuggerUrl') or '')
             self.injected = False
-            self.settings_mode = settings_mode
             self.socket = QWebSocket()
             self.socket.setParent(self)
             self.socket.connected.connect(self._on_connected)
-            self.socket.textMessageReceived.connect(self._on_message)
             self.socket.open(QUrl(self.key))
 
         def _on_connected(self) -> None:
             '''Добавляет сценарий на страницу: в будущие документы и в текущий.'''
             self._send('Page.enable')
-            self._send('Runtime.enable')
-            if self.settings_mode:
-                self._send('Page.addScriptToEvaluateOnNewDocument',
-                           {'source': INJECTED_SETTINGS_SCRIPT})
-                self._send('Runtime.evaluate',
-                           {'expression': INJECTED_SETTINGS_SCRIPT + '; void 0;'})
-                self._send('Runtime.addBinding', {'name': 'SteamPACC_set'})
-                self._send('Runtime.evaluate', {
-                    'expression': cef.settings_configure_expression(self._currencies())})
-            else:
-                self._send('Page.addScriptToEvaluateOnNewDocument', {'source': INJECTED_SCRIPT})
-                self._send('Runtime.evaluate', {'expression': INJECTED_SCRIPT + '; void 0;'})
-                self._send('Runtime.evaluate', {'expression': cef.configure_expression(self._currencies())})
+            self._send('Page.addScriptToEvaluateOnNewDocument', {'source': INJECTED_SCRIPT})
+            self._send('Runtime.evaluate', {'expression': INJECTED_SCRIPT + '; void 0;'})
+            self._send('Runtime.evaluate', {
+                'expression': cef.configure_expression(
+                    self._currencies(), self._lang())})
             self.injected = True
 
         def _currencies(self) -> list[str]:
@@ -85,19 +74,11 @@ if QT_AVAILABLE:
                 return [str(code) for code in value]
             return ['RUB', 'USD', 'EUR']
 
-        def _on_message(self, text: str) -> None:
-            '''Разбирает события DevTools; биндинг передаёт выбор регионов.'''
-            if 'bindingCalled' not in text or 'SteamPACC_set' not in text:
-                return
-            try:
-                message = json.loads(str(text))
-            except ValueError:
-                return
-            payload = (message.get('params') or {}).get('payload')
+        def _lang(self) -> str:
+            '''Текущий язык надписей; берётся из родителя-интегратора.'''
             parent = self.parent()
-            handler = getattr(parent, '_on_page_currencies', None)
-            if callable(handler) and payload:
-                handler(payload)
+            value = getattr(parent, '_lang', None)
+            return value if value in ('ru', 'en') else 'ru'
 
         def _send(self, method: str, params: dict[str, Any] | None = None) -> None:
             '''Отправляет команду DevTools; обрыв связи не ломает работу.'''
@@ -109,15 +90,12 @@ if QT_AVAILABLE:
             except (OSError, ValueError):
                 pass
 
-        def apply_currencies(self, currencies: list[str]) -> None:
-            '''Обновляет список валют на уже внедрённой странице.'''
+        def apply_currencies(self, currencies: list[str], lang: str = 'ru') -> None:
+            '''Обновляет список валют и язык на уже внедрённой странице.'''
             if not self.injected:
                 return
-            if self.settings_mode:
-                expression = cef.settings_configure_expression(currencies)
-            else:
-                expression = cef.configure_expression(currencies)
-            self._send('Runtime.evaluate', {'expression': expression})
+            self._send('Runtime.evaluate', {
+                'expression': cef.configure_expression(currencies, lang)})
 
         def close(self) -> None:
             self.socket.close()
@@ -133,12 +111,12 @@ if QT_AVAILABLE:
         '''Следит за страницами магазина и внедряет в них цены.'''
 
         status_changed = Signal(str)
-        page_currencies_received = Signal(list)
 
         def __init__(self, parent: QObject | None = None):
             super().__init__(parent)
             self._enabled = True
             self._currencies: list[str] = ['RUB', 'USD', 'EUR']
+            self._lang = 'ru'
             self._connections: dict[str, StorePageConnection] = {}
             self._port: int | None = None
 
@@ -153,18 +131,21 @@ if QT_AVAILABLE:
                 self._drop_all()
             self.status_changed.emit('вкл' if self._enabled else 'выкл')
 
-        def set_currencies(self, currencies: list[str]) -> None:
+        def set_currencies(self, currencies: list[str], lang: str = 'ru') -> None:
             '''Применяет новый список валют ко всем открытым страницам.'''
             self._currencies = list(currencies)
+            self._lang = lang if lang in ('ru', 'en') else 'ru'
             for connection in list(self._connections.values()):
-                connection.apply_currencies(self._currencies)
+                connection.apply_currencies(self._currencies, self._lang)
 
         def restart_steam_with_debug(self, steam_exe: str) -> bool:
-            '''Перезапускает Steam с отладочным портом и возвращает успех.'''
+            '''Перезапускает Steam с отладочным портом и возвращает успех.
+
+            После запуска ждём, пока порт отладки Steam реально поднимется:
+            без этого можно решить, что всё готово, а цены так и не появятся.
+            '''
             import subprocess
             import time as time_module
-
-            from . import win_api
 
             subprocess.Popen(
                 [steam_exe, '-shutdown'],
@@ -176,14 +157,21 @@ if QT_AVAILABLE:
                     break
                 time_module.sleep(1)
             if _steam_running():
-                self.status_changed.emit('Steam не закрылся')
+                self.status_changed.emit('Steam не закрылся за 30 секунд')
                 return False
             subprocess.Popen(
                 [steam_exe, '-cef-enable-debugging', '-silent'],
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
-            self.status_changed.emit('Steam перезапускается')
-            return True
+            self.status_changed.emit('Steam перезапускается, ждём порт…')
+            port_deadline = time_module.time() + 60
+            while time_module.time() < port_deadline:
+                if cef.is_steam_devtools(cef.DEFAULT_DEBUG_PORT):
+                    self.status_changed.emit('Steam с ценами: готово')
+                    return True
+                time_module.sleep(2)
+            self.status_changed.emit('Порт отладки не поднялся за 60 секунд')
+            return False
 
         def _drop_all(self) -> None:
             for connection in list(self._connections.values()):
@@ -201,56 +189,39 @@ if QT_AVAILABLE:
                     if self._port is None:
                         self.status_changed.emit('Steam без отладки')
                         return
-                all_targets = cef.fetch_targets(self._port)
-                targets = cef.store_targets(all_targets)
-                settings = cef.settings_targets(all_targets)
+                targets = cef.store_targets(cef.fetch_targets(self._port))
             except OSError:
                 self.status_changed.emit('Steam недоступен')
                 return
 
             alive_keys = set()
-            for target, settings_mode in (
-                [(t, False) for t in targets] + [(t, True) for t in settings]
-            ):
+            for target in targets:
                 key = str(target.get('webSocketDebuggerUrl') or '')
                 if not key:
                     continue
                 alive_keys.add(key)
                 connection = self._connections.get(key)
                 if connection is None:
-                    connection = StorePageConnection(target, self, settings_mode=settings_mode)
+                    connection = StorePageConnection(target, self)
                     self._connections[key] = connection
                     self.status_changed.emit('страниц: ' + str(len(self._connections)))
                 elif connection.injected:
                     # Список валют мог обновиться: повторная настройка безвредна.
-                    connection.apply_currencies(self._currencies)
+                    connection.apply_currencies(self._currencies, self._lang)
 
             for key in list(self._connections):
                 if key not in alive_keys:
                     self._connections.pop(key).close()
 
-        def _on_page_currencies(self, payload: str) -> None:
-            '''Принимает выбор регионов из панели в окне настроек Steam.'''
-            try:
-                data = json.loads(str(payload))
-                currencies = [str(code).upper() for code in data.get('currencies', []) if code]
-            except ValueError:
-                return
-            if not currencies:
-                return
-            currencies = currencies[:8]
-            self._currencies = currencies
-            # Мгновенно применяем новые регионы ко всем открытым страницам:
-            # без перезагрузки страниц и без ожидания следующего скана.
-            for connection in list(self._connections.values()):
-                connection.apply_currencies(currencies)
-            self.page_currencies_received.emit(currencies)
-
         def _find_port(self) -> int | None:
-            '''Ищет отладочный порт steamwebhelper: 8080 и соседние.'''
+            '''Ищет отладочный порт steamwebhelper: 8080 и соседние.
+
+            На каждом порту проверяется, что это именно Steam (по
+            User-Agent), чтобы не подключиться к чужому DevTools.
+            '''
             start = cef.DEFAULT_DEBUG_PORT
             for port in range(start, start + PORT_SCAN_RANGE):
-                if cef.debug_available(port):
+                if cef.is_steam_devtools(port):
                     return port
             return None
 

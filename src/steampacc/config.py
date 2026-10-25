@@ -19,17 +19,11 @@ APP_DIR_NAME = 'SteamPACC'
 #: Имя файла настроек.
 SETTINGS_FILE_NAME = 'config.json'
 
-#: Минимальная и максимальная прозрачность оверлея.
-MIN_OPACITY = 0.1
-MAX_OPACITY = 1.0
+#: Поддерживаемые языки интерфейса.
+LANGUAGES = ('ru', 'en')
 
-#: Минимальный и максимальный масштаб оверлея в процентах.
-MIN_SCALE = 50
-MAX_SCALE = 200
-
-#: Минимальный и максимальный интервал обновления в секундах.
-MIN_INTERVAL = 10
-MAX_INTERVAL = 3600
+#: Поддерживаемые темы окна.
+THEMES = ('dark', 'light')
 
 
 @dataclass(frozen=True)
@@ -37,22 +31,12 @@ class Settings:
     '''Пользовательские настройки приложения.'''
 
     language: str = 'ru'
-    country: str = 'ru'
-    overlay_opacity: float = 0.9
-    overlay_scale: int = 100
-    show_fps: bool = True
-    update_interval: int = 60
-    launch_with_steam: bool = False
     currencies: tuple[str, ...] = ('RUB', 'USD', 'EUR')
-    #: Внедрение цен в страницы магазина клиентa Steam (DevTools).
     integration_enabled: bool = True
-    #: Тема окна: тёмная или светлая.
     theme: str = 'dark'
-
-
-def _clamp(value: float, low: float, high: float) -> float:
-    '''Ограничивает число заданным диапазоном.'''
-    return max(low, min(high, value))
+    launch_with_steam: bool = False
+    #: Путь к steam.exe, если Steam стоит в нестандартном месте.
+    steam_exe: str = ''
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -69,32 +53,10 @@ def _as_str(value: Any, default: str) -> str:
     return default
 
 
-def _as_int(value: Any, default: int) -> int:
-    '''Приводит значение к целому числу, при неудаче берёт значение по умолчанию.'''
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return default
-    return default
-
-
-def _as_float(value: Any, default: float) -> float:
-    '''Приводит значение к числу, при неудаче берёт значение по умолчанию.'''
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return default
-    return default
+def _as_choice(value: Any, allowed: tuple[str, ...], default: str) -> str:
+    '''Выбирает значение из списка разрешённых; мусор даёт умолчание.'''
+    text = value if isinstance(value, str) else ''
+    return text.strip().lower() if text.strip().lower() in allowed else default
 
 
 def settings_path() -> Path:
@@ -110,7 +72,11 @@ def settings_path() -> Path:
 
 
 def _as_str_list(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
-    '''Приводит значение к списку строк; неподходящее значение даёт умолчание.'''
+    '''Приводит значение к списку строк; пустой список разрешён.
+
+    Пустой список — осмысленный выбор: пользователь выключил все
+    регионы, и блок цен в магазине показываться не должен.
+    '''
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
         return default
     result: list[str] = []
@@ -121,26 +87,19 @@ def _as_str_list(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:
                 result.append(code)
         if len(result) >= 8:
             break
-    return tuple(result) if result else default
+    return tuple(result)
 
 
 def _from_mapping(data: dict) -> Settings:
     '''Собирает настройки из словаря, отбрасывая лишние и неверные значения.'''
     base = Settings()
     return Settings(
-        language=_as_str(data.get('language'), base.language),
-        country=_as_str(data.get('country'), base.country),
-        overlay_opacity=_clamp(
-            _as_float(data.get('overlay_opacity'), base.overlay_opacity), MIN_OPACITY, MAX_OPACITY),
-        overlay_scale=int(_clamp(
-            _as_int(data.get('overlay_scale'), base.overlay_scale), MIN_SCALE, MAX_SCALE)),
-        show_fps=_as_bool(data.get('show_fps'), base.show_fps),
-        update_interval=int(_clamp(
-            _as_int(data.get('update_interval'), base.update_interval), MIN_INTERVAL, MAX_INTERVAL)),
-        launch_with_steam=_as_bool(data.get('launch_with_steam'), base.launch_with_steam),
+        language=_as_choice(data.get('language'), LANGUAGES, base.language),
         currencies=_as_str_list(data.get('currencies'), base.currencies),
         integration_enabled=_as_bool(data.get('integration_enabled'), base.integration_enabled),
-        theme=_as_str(data.get('theme'), base.theme) if _as_str(data.get('theme'), base.theme) in ('dark', 'light') else 'dark',
+        theme=_as_choice(data.get('theme'), THEMES, base.theme),
+        launch_with_steam=_as_bool(data.get('launch_with_steam'), base.launch_with_steam),
+        steam_exe=_as_str(data.get('steam_exe'), base.steam_exe),
     )
 
 
@@ -166,15 +125,11 @@ def save_settings(settings: Settings, path: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     data = {
         'language': settings.language,
-        'country': settings.country,
-        'overlay_opacity': settings.overlay_opacity,
-        'overlay_scale': settings.overlay_scale,
-        'show_fps': settings.show_fps,
-        'update_interval': settings.update_interval,
-        'launch_with_steam': settings.launch_with_steam,
         'currencies': list(settings.currencies),
         'integration_enabled': settings.integration_enabled,
         'theme': settings.theme,
+        'launch_with_steam': settings.launch_with_steam,
+        'steam_exe': settings.steam_exe,
     }
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     return target
@@ -184,15 +139,11 @@ def apply_changes(settings: Settings, changes: dict) -> Settings:
     '''Применяет изменения к настройкам и проверяет значения.'''
     merged = {
         'language': settings.language,
-        'country': settings.country,
-        'overlay_opacity': settings.overlay_opacity,
-        'overlay_scale': settings.overlay_scale,
-        'show_fps': settings.show_fps,
-        'update_interval': settings.update_interval,
-        'launch_with_steam': settings.launch_with_steam,
         'currencies': list(settings.currencies),
         'integration_enabled': settings.integration_enabled,
         'theme': settings.theme,
+        'launch_with_steam': settings.launch_with_steam,
+        'steam_exe': settings.steam_exe,
     }
     merged.update(changes)
     return _from_mapping(merged)

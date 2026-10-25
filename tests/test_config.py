@@ -17,20 +17,26 @@ from steampacc.config import (
 def test_settings_have_defaults() -> None:
     settings = Settings()
     assert settings.language == 'ru'
-    assert settings.country == 'ru'
-    assert settings.overlay_opacity == 0.9
-    assert settings.overlay_scale == 100
-    assert settings.update_interval == 60
-    assert settings.show_fps is True
+    assert settings.theme == 'dark'
+    assert settings.integration_enabled is True
+    assert settings.launch_with_steam is False
+    assert settings.steam_exe == ''
 
 
 def test_load_settings_reads_file(tmp_path: Path) -> None:
     path = tmp_path / 'config.json'
-    path.write_text(json.dumps({'language': 'en', 'overlay_scale': 150}), encoding='utf-8')
+    path.write_text(json.dumps({'language': 'en', 'theme': 'light'}), encoding='utf-8')
     settings = load_settings(path)
     assert settings.language == 'en'
-    assert settings.overlay_scale == 150
-    assert settings.country == 'ru'
+    assert settings.theme == 'light'
+
+
+def test_load_settings_ignores_garbage_values(tmp_path: Path) -> None:
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({'language': 'клингонский', 'theme': 'розовая'}), encoding='utf-8')
+    settings = load_settings(path)
+    assert settings.language == 'ru'
+    assert settings.theme == 'dark'
 
 
 def test_load_settings_survives_broken_file(tmp_path: Path) -> None:
@@ -45,27 +51,32 @@ def test_load_settings_without_file(tmp_path: Path) -> None:
 
 def test_save_and_load_round_trip(tmp_path: Path) -> None:
     path = tmp_path / 'nested' / 'config.json'
-    settings = Settings(language='en', country='us', overlay_scale=120)
+    settings = Settings(language='en', theme='light', steam_exe=r'C:\Games\Steam\steam.exe')
     saved = save_settings(settings, path)
     assert saved == path
     assert path.exists()
     loaded = load_settings(path)
     assert loaded.language == 'en'
-    assert loaded.country == 'us'
-    assert loaded.overlay_scale == 120
+    assert loaded.theme == 'light'
+    assert loaded.steam_exe == r'C:\Games\Steam\steam.exe'
 
 
-def test_apply_changes_clamps_values() -> None:
-    result = apply_changes(Settings(), {'overlay_opacity': 5.0, 'overlay_scale': 10, 'update_interval': 1})
-    assert result.overlay_opacity == 1.0
-    assert result.overlay_scale == 50
-    assert result.update_interval == 10
+def test_old_overlay_fields_are_dropped(tmp_path: Path) -> None:
+    '''Поля удалённого оверлея не ломают чтение старого конфига.'''
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({
+        'overlay_opacity': 0.5, 'overlay_scale': 150, 'show_fps': False,
+        'update_interval': 30, 'country': 'us', 'currencies': ['USD'],
+    }), encoding='utf-8')
+    settings = load_settings(path)
+    assert settings.currencies == ('USD',)
+    assert not hasattr(settings, 'overlay_opacity')
 
 
 def test_apply_changes_ignores_garbage() -> None:
-    result = apply_changes(Settings(), {'language': 42, 'show_fps': 'да'})
+    result = apply_changes(Settings(), {'language': 42, 'integration_enabled': 'да'})
     assert result.language == 'ru'
-    assert result.show_fps is True
+    assert result.integration_enabled is True
 
 
 def test_settings_path_points_to_file() -> None:
@@ -94,3 +105,15 @@ def test_save_and_load_keeps_currencies(tmp_path: Path) -> None:
 def test_apply_changes_replaces_currencies() -> None:
     result = apply_changes(Settings(), {'currencies': ['jpy']})
     assert result.currencies == ('JPY',)
+
+
+def test_empty_currencies_allowed() -> None:
+    '''Пустой список регионов — разрешённый выбор: блок цен выключается.'''
+    result = apply_changes(Settings(), {'currencies': []})
+    assert result.currencies == ()
+    path = Path(__file__).parent / 'tmp_empty.json'
+    try:
+        save_settings(result, path)
+        assert load_settings(path).currencies == ()
+    finally:
+        path.unlink(missing_ok=True)
