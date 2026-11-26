@@ -95,4 +95,10 @@ steampacc games  # консольный список игр
 
 MIT License — см. [LICENSE](LICENSE)
 
+## Star History
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Stintik-123/SteamPACC&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Stintik-123/SteamPACC&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Stintik-123/SteamPACC&type=Date" />
+</picture>
